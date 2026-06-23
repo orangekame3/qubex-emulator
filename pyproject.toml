@@ -1,9 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "qubex-emulator"
 version = "0.1.0"
 description = "Emulation plugin for qubex pulse-level experiments"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "Apache-2.0"
 dependencies = [
     "qubex",
     "plotly>=5.17.0",
@@ -15,11 +20,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+simulation = [
+    "pandas",
+    "qutip",
+    "qxsimulator @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxsimulator",
+]
 dev = [
     "pytest>=7.0.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qubex_emulator"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.uv.sources]
 qubex = { git = "https://github.com/amachino/qubex.git", branch="feat/mock-mode"}
