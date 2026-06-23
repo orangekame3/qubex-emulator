@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Collection, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 _QUBIT_LABEL_PATTERN = re.compile(r"^Q(\d+)$")
@@ -23,16 +25,131 @@ def _label_to_qid(label: str) -> int:
     return int(match.group(1))
 
 
+class _FallbackResult(dict):
+    """Minimal Result fallback used before qubex result models are importable."""
+
+    def __init__(
+        self,
+        *,
+        data: Any | None = None,
+        figure: Any | None = None,
+        figures: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(data if isinstance(data, Mapping) else {"data": data})
+        self.data = data
+        self.figure = figure
+        self.figures = figures or {}
+
+    def plot(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+class _FallbackExperimentResult:
+    """Minimal ExperimentResult fallback for optional model imports."""
+
+    def __init__(
+        self,
+        *,
+        data: Mapping[str, Any],
+        rabi_params: Mapping[str, Any] | None = None,
+        status: str = "success",
+    ) -> None:
+        self.data = dict(data)
+        self.rabi_params = dict(rabi_params or {})
+        self.status = status
+
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
+    def plot(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def fit(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {key: getattr(value, "rabi_param", None) for key, value in self.data.items()}
+
+
+class _FakeTargetMeasurement:
+    def __init__(self, kerneled: Any, *, data: Any | None = None) -> None:
+        self.kerneled = kerneled
+        self.data = kerneled if data is None else data
+
+    def __len__(self) -> int:
+        try:
+            return len(self.data)
+        except TypeError:
+            return 1
+
+    def __getitem__(self, index: int) -> Any:
+        return self.data[index]
+
+
+class _FakeMeasureResult:
+    def __init__(self, data: Mapping[str, Any]) -> None:
+        self.data = dict(data)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
+    def plot(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+class _FakeSweepTargetData:
+    def __init__(self, target: str, sweep_range: Any, data: Any) -> None:
+        self.target = target
+        self.sweep_range = sweep_range
+        self.data = data
+
+    def __getitem__(self, index: int) -> Any:
+        if index != 0:
+            raise IndexError(index)
+        return self.data
+
+
+class _FakeSweepResult:
+    def __init__(
+        self,
+        *,
+        data: Mapping[str, Any],
+        sweep_values: Any | None = None,
+        results: list[Any] | None = None,
+        shape: tuple[int, ...] | None = None,
+        sweep_points: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.data = dict(data)
+        self.sweep_values = sweep_values
+        self.results = results or []
+        self.shape = shape or ()
+        self._sweep_points = sweep_points or []
+
+    def __getitem__(self, key: str) -> Any:
+        return self.data[key]
+
+    def plot(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def get_sweep_point(self, index: tuple[int, ...] | int) -> dict[str, Any]:
+        if isinstance(index, tuple):
+            flat_index = 0
+            multiplier = 1
+            for size, value in zip(reversed(self.shape), reversed(index), strict=False):
+                flat_index += value * multiplier
+                multiplier *= size
+        else:
+            flat_index = index
+        return self._sweep_points[flat_index]
+
+
 @dataclass
 class FakeExperiment:
     """Small simulation fixture with QUBEX-like calibration metadata."""
 
     name: str = "fake-qubex-two-qubit-system"
     device_id: str = "fake-qubex-two-qubit-system"
-    qubit_labels: tuple[str, str] = ("Q00", "Q01")
-    qubit_frequencies: tuple[float, float] = (7.157231, 8.032295)
-    qubit_anharmonicities: tuple[float, float] = (-0.393715, -0.487412)
-    readout_frequencies: tuple[float, float] = (6.752, 6.903)
+    qubit_labels: tuple[str, ...] = ("Q00", "Q01", "Q02", "Q03")
+    qubit_frequencies: tuple[float, ...] = (7.157231, 8.032295, 7.812112, 6.944337)
+    qubit_anharmonicities: tuple[float, ...] = (-0.393715, -0.487412, -0.421337, -0.365884)
+    readout_frequencies: tuple[float, ...] = (6.752, 6.903, 6.844, 6.711)
     coupling_strength: float = 0.005
     qubit_lifetime: tuple[float, float] = (20.0, 20.0)
     qubit_lifetimes: tuple[tuple[float, float], ...] | None = None
@@ -44,19 +161,411 @@ class FakeExperiment:
     single_qubit_fidelity: float | None = None
     two_qubit_fidelity: float | None = None
     readout_assignment_error: float | None = None
-    positions: tuple[tuple[float, float], tuple[float, float]] = (
+    positions: tuple[tuple[float, float], ...] = (
         (0.0, 0.0),
         (1.0, 0.0),
+        (2.0, 0.0),
+        (3.0, 0.0),
     )
     calibrated_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    readout_pre_margin: float = 0.0
+    readout_post_margin: float = 0.0
+    config_path: str = ""
+    params_path: str = ""
+    property_dir: Path = Path(".")
+    classifier_dir: Path = Path(".")
+    classifier_type: str = "gmm"
+    configuration_mode: str = "ge-cr-cr"
     drag_hpi_pulses: dict[str, Any] = field(default_factory=dict, init=False)
     drag_pi_pulses: dict[str, Any] = field(default_factory=dict, init=False)
+    ef_hpi_pulses: dict[str, Any] = field(default_factory=dict, init=False)
+    ef_pi_pulses: dict[str, Any] = field(default_factory=dict, init=False)
     cr_params: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     cx_frame_params: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
     classifiers: dict[str, Any] = field(default_factory=dict, init=False)
     readout_assignment_errors: dict[str, float] = field(default_factory=dict, init=False)
+    properties: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _rabi_params: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    _connected: bool = field(default=False, init=False, repr=False)
     _clifford_generator: Any | None = field(default=None, init=False, repr=False)
+
+    def __init__(
+        self,
+        *,
+        chip_id: str | None = None,
+        system_id: str | None = None,
+        muxes: Collection[str | int] | None = None,
+        qubits: Collection[str | int] | None = None,
+        exclude_qubits: Collection[str | int] | None = None,
+        config_dir: Path | str | None = None,
+        params_dir: Path | str | None = None,
+        calib_note_path: Path | str | None = None,
+        calibration_valid_days: int | None = None,
+        drag_hpi_duration: float | None = None,
+        drag_pi_duration: float | None = None,
+        readout_duration: float | None = None,
+        readout_pre_margin: float | None = None,
+        readout_post_margin: float | None = None,
+        property_dir: Path | str | None = None,
+        classifier_dir: Path | str | None = None,
+        classifier_type: str | None = None,
+        configuration_mode: str | None = None,
+        name: str = "fake-qubex-two-qubit-system",
+        device_id: str | None = None,
+        qubit_labels: Collection[str] | None = None,
+        qubit_frequencies: Collection[float] | None = None,
+        qubit_anharmonicities: Collection[float] | None = None,
+        readout_frequencies: Collection[float] | None = None,
+        coupling_strength: float = 0.005,
+        qubit_lifetime: tuple[float, float] = (20.0, 20.0),
+        qubit_lifetimes: tuple[tuple[float, float], ...] | None = None,
+        hpi_duration: float | None = None,
+        pi_duration: float | None = None,
+        positions: Collection[tuple[float, float]] | None = None,
+        calibrated_at: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        **extra_options: Any,
+    ) -> None:
+        labels = tuple(qubit_labels or self._normalize_qubit_labels(qubits) or ("Q00", "Q01", "Q02", "Q03"))
+        if exclude_qubits is not None:
+            excluded = set(self._normalize_qubit_labels(exclude_qubits) or ())
+            labels = tuple(label for label in labels if label not in excluded)
+        n_qubits = len(labels)
+
+        self.name = name
+        self.device_id = device_id or system_id or chip_id or name
+        self.qubit_labels = labels
+        self.qubit_frequencies = self._pad_float_tuple(
+            qubit_frequencies,
+            (7.157231, 8.032295, 7.812112, 6.944337),
+            n_qubits,
+        )
+        self.qubit_anharmonicities = self._pad_float_tuple(
+            qubit_anharmonicities,
+            (-0.393715, -0.487412, -0.421337, -0.365884),
+            n_qubits,
+        )
+        self.readout_frequencies = self._pad_float_tuple(
+            readout_frequencies,
+            (6.752, 6.903, 6.844, 6.711),
+            n_qubits,
+        )
+        self.coupling_strength = coupling_strength
+        self.qubit_lifetime = qubit_lifetime
+        self.qubit_lifetimes = qubit_lifetimes
+        self.hpi_duration = hpi_duration or drag_hpi_duration or 24.0
+        self.pi_duration = pi_duration or drag_pi_duration or 24.0
+        self.readout_duration = readout_duration or 1000.0
+        self.rzx90_duration = None
+        self.cx_duration = None
+        self.single_qubit_fidelity = None
+        self.two_qubit_fidelity = None
+        self.readout_assignment_error = None
+        self.positions = tuple(positions or ((float(index), 0.0) for index in range(n_qubits)))
+        self.calibrated_at = calibrated_at
+        self.metadata = dict(metadata or {})
+        self.metadata.update(
+            {
+                "chip_id": chip_id,
+                "system_id": system_id,
+                "muxes": list(muxes or ()),
+                "calib_note_path": str(calib_note_path) if calib_note_path is not None else None,
+                "calibration_valid_days": calibration_valid_days,
+                "extra_options": dict(extra_options),
+            }
+        )
+        self.readout_pre_margin = readout_pre_margin or 0.0
+        self.readout_post_margin = readout_post_margin or 0.0
+        self.config_path = str(config_dir or "")
+        self.params_path = str(params_dir or "")
+        self.property_dir = Path(property_dir or ".")
+        self.classifier_dir = Path(classifier_dir or ".")
+        self.classifier_type = classifier_type or "gmm"
+        self.configuration_mode = configuration_mode or "ge-cr-cr"
+        self.drag_hpi_pulses = {}
+        self.drag_pi_pulses = {}
+        self.ef_hpi_pulses = {}
+        self.ef_pi_pulses = {}
+        self.cr_params = {}
+        self.cx_frame_params = {}
+        self.classifiers = {}
+        self.readout_assignment_errors = {}
+        self.properties = {}
+        self._rabi_params = {}
+        self._connected = False
+        self._clifford_generator = None
+
+    def __getattr__(self, name: str) -> Any:
+        """Expose explicit placeholders for Experiment APIs not emulated locally."""
+        if name in _UNSUPPORTED_EXPERIMENT_METHODS:
+            return self._unsupported_method(name)
+        raise AttributeError(name)
+
+    def _unsupported_method(self, name: str) -> Any:
+        def method(*_: Any, **__: Any) -> Any:
+            raise NotImplementedError(
+                f"FakeExperiment.{name} is part of the hardware Experiment API "
+                "and is not implemented by the local emulator."
+            )
+
+        return method
+
+    @property
+    def ctx(self) -> "FakeExperiment":
+        """Return a context-like object for facade compatibility."""
+        return self
+
+    def run(self, task: Any) -> Any:
+        """Run an ExperimentTask-like object against this fake experiment."""
+        if callable(task):
+            return task(self)
+        run = getattr(task, "run", None)
+        if callable(run):
+            return run(self)
+        raise TypeError("task must be callable or expose run(experiment).")
+
+    def print_environment(self, verbose: bool | None = None) -> None:
+        """Print a compact fake environment summary."""
+        print(f"FakeExperiment(name={self.name!r}, qubits={list(self.qubit_labels)!r})")
+        if verbose:
+            print(f"model={self.model()!r}")
+
+    def print_boxes(self) -> None:
+        """Print the fake box inventory."""
+        print("FakeExperiment has no hardware boxes.")
+
+    @property
+    def session_service(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def measurement_service(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def calibration_service(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def characterization_service(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def benchmarking_service(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def optimization_service(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def tool(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def util(self) -> "FakeExperiment":
+        return self
+
+    def discretize_time_range(self, values: Any, sampling_period: float | None = None) -> Any:
+        import numpy as np
+
+        array = np.asarray(values, dtype=float)
+        if sampling_period is None or sampling_period <= 0:
+            return array
+        return np.unique(np.round(array / sampling_period) * sampling_period)
+
+    def resolve_sampling_period(self, sampling_period: float | None = None) -> float:
+        return float(sampling_period or self.dt * 1e9)
+
+    def split_frequency_range(self, values: Any, chunk_size: int | None = None) -> list[Any]:
+        import numpy as np
+
+        array = np.asarray(values, dtype=float)
+        if chunk_size is None or chunk_size <= 0:
+            return [array]
+        return [array[index : index + chunk_size] for index in range(0, len(array), chunk_size)]
+
+    @property
+    def measurement(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def system_manager(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def config_loader(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def experiment_system(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def quantum_system(self) -> Any:
+        try:
+            return self._qx_system()
+        except ImportError:
+            return SimpleNamespace(label=self.name, qubits=list(self.qubit_labels))
+
+    @property
+    def control_system(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def device_controller(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def backend_controller(self) -> "FakeExperiment":
+        return self
+
+    @property
+    def params(self) -> dict[str, Any]:
+        return {}
+
+    @property
+    def chip(self) -> Any:
+        return SimpleNamespace(id=self.device_id, label=self.device_id)
+
+    @property
+    def chip_id(self) -> str:
+        return self.device_id
+
+    @property
+    def resonator_labels(self) -> list[str]:
+        return [self.resolve_read_label(label) for label in self.qubit_labels]
+
+    @property
+    def mux_labels(self) -> list[str]:
+        return []
+
+    @property
+    def qubits(self) -> dict[str, Any]:
+        return {label: self.get_target(label) for label in self.qubit_labels}
+
+    @property
+    def resonators(self) -> dict[str, Any]:
+        return {label: self.get_target(label) for label in self.resonator_labels}
+
+    @property
+    def targets(self) -> dict[str, Any]:
+        return self.available_targets
+
+    @property
+    def available_targets(self) -> dict[str, Any]:
+        labels = list(self.qubit_labels) + self.resonator_labels + self.cr_labels
+        return {label: self.get_target(label) for label in labels}
+
+    @property
+    def ge_targets(self) -> dict[str, Any]:
+        return self.qubits
+
+    @property
+    def ef_targets(self) -> dict[str, Any]:
+        return {}
+
+    @property
+    def cr_targets(self) -> dict[str, Any]:
+        return {label: self.get_target(label) for label in self.cr_labels}
+
+    @property
+    def cr_labels(self) -> list[str]:
+        return [f"{control}-{target}" for control, target in self.cr_pairs]
+
+    @property
+    def cr_pairs(self) -> list[tuple[str, str]]:
+        if len(self.qubit_labels) < 2:
+            return []
+        return [(self.qubit_labels[0], self.qubit_labels[1])]
+
+    @property
+    def edge_pairs(self) -> list[tuple[str, str]]:
+        return self.cr_pairs
+
+    @property
+    def edge_labels(self) -> list[str]:
+        return self.cr_labels
+
+    @property
+    def boxes(self) -> dict[str, Any]:
+        return {}
+
+    @property
+    def box_ids(self) -> list[str]:
+        return []
+
+    @property
+    def calib_note(self) -> Any:
+        return SimpleNamespace(save=lambda *args, **kwargs: None)
+
+    @property
+    def note(self) -> dict[str, Any]:
+        return {}
+
+    @property
+    def state_centers(self) -> dict[str, dict[int, complex]]:
+        return {
+            label: {0: complex(-1.0, 0.0), 1: complex(1.0, 0.0)}
+            for label in self.qubit_labels
+        }
+
+    @property
+    def reference_phases(self) -> dict[str, float]:
+        return {label: 0.0 for label in self.qubit_labels}
+
+    @property
+    def drag_hpi_duration(self) -> float:
+        return self.hpi_duration
+
+    @property
+    def drag_pi_duration(self) -> float:
+        return self.pi_duration
+
+    @property
+    def hpi_pulse(self) -> dict[str, Any]:
+        return self.drag_hpi_pulse
+
+    @property
+    def pi_pulse(self) -> dict[str, Any]:
+        return self.drag_pi_pulse
+
+    @property
+    def drag_hpi_pulse(self) -> dict[str, Any]:
+        return self.drag_hpi_pulses
+
+    @property
+    def drag_pi_pulse(self) -> dict[str, Any]:
+        return self.drag_pi_pulses
+
+    @property
+    def ef_hpi_pulse(self) -> dict[str, Any]:
+        return self.ef_hpi_pulses
+
+    @property
+    def ef_pi_pulse(self) -> dict[str, Any]:
+        return self.ef_pi_pulses
+
+    @property
+    def cr_pulse(self) -> dict[str, Any]:
+        return {
+            label: self.zx90(*self.cr_pair(label))
+            for label in self.cr_labels
+            if label in self.cr_params
+        }
+
+    @property
+    def rabi_params(self) -> dict[str, Any]:
+        return dict(self._rabi_params)
+
+    @property
+    def ge_rabi_params(self) -> dict[str, Any]:
+        return self.rabi_params
+
+    @property
+    def ef_rabi_params(self) -> dict[str, Any]:
+        return {key: value for key, value in self._rabi_params.items() if self._is_ef_label(key)}
 
     def model(self) -> dict[str, Any]:
         """Build the internal emulator model used by qxsimulator adapters."""
@@ -88,6 +597,222 @@ class FakeExperiment:
         )
         return output_path
 
+    def load_property(self, property_name: str) -> dict[str, Any]:
+        """Load an in-memory fake property table."""
+        return dict(self.properties.get(property_name, {}))
+
+    def save_property(
+        self,
+        property_name: str,
+        data: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Save an in-memory fake property table."""
+        self.properties[property_name] = dict(data or kwargs)
+
+    def load_calib_note(self, path: Path | str | None = None) -> None:
+        """Accept calib-note reload calls for facade compatibility."""
+        if path is not None:
+            self.metadata["calib_note_path"] = str(path)
+
+    def get_qubit_label(self, index: int) -> str:
+        return self.qubit_labels[index]
+
+    def get_resonator_label(self, index: int) -> str:
+        return self.resolve_read_label(self.get_qubit_label(index))
+
+    def get_cr_label(
+        self,
+        control_qubit: str | int,
+        target_qubit: str | int,
+    ) -> str:
+        control = (
+            self.get_qubit_label(control_qubit)
+            if isinstance(control_qubit, int)
+            else str(control_qubit)
+        )
+        target = (
+            self.get_qubit_label(target_qubit)
+            if isinstance(target_qubit, int)
+            else str(target_qubit)
+        )
+        return f"{control}-{target}"
+
+    def get_cr_pairs(
+        self,
+        qubits: Collection[str] | str | None = None,
+        *,
+        directed: bool | None = True,
+    ) -> list[tuple[str, str]]:
+        pairs = list(self.cr_pairs)
+        if not directed:
+            pairs = pairs + [(target, control) for control, target in pairs]
+        if qubits is None:
+            return pairs
+        selected = set(self._target_labels(qubits))
+        return [pair for pair in pairs if pair[0] in selected or pair[1] in selected]
+
+    def get_cr_labels(
+        self,
+        qubits: Collection[str] | str | None = None,
+        *,
+        directed: bool | None = True,
+    ) -> list[str]:
+        return [
+            self.get_cr_label(control, target)
+            for control, target in self.get_cr_pairs(qubits, directed=directed)
+        ]
+
+    def get_edge_pairs(self, qubits: Collection[str] | str | None = None) -> list[tuple[str, str]]:
+        return self.get_cr_pairs(qubits, directed=False)
+
+    def get_edge_labels(self, qubits: Collection[str] | str | None = None) -> list[str]:
+        return [
+            self.get_cr_label(control, target)
+            for control, target in self.get_edge_pairs(qubits)
+        ]
+
+    def cr_pair(self, cr_label: str) -> tuple[str, str]:
+        control, target = cr_label.split("-", 1)
+        return control, target
+
+    def get_rabi_param(self, target: str, transition: str | None = None) -> Any:
+        label = self._resolve_rabi_label(target, transition=transition)
+        return self._rabi_params.get(label)
+
+    def store_rabi_params(self, params: Mapping[str, Any] | None = None, **kwargs: Any) -> None:
+        values = dict(params or kwargs)
+        self._rabi_params.update(values)
+        self.properties["rabi_params"] = dict(self._rabi_params)
+
+    def get_spectators(self, targets: Collection[str] | str | None = None) -> list[str]:
+        selected = set(self._target_labels(targets)) if targets is not None else set()
+        return [label for label in self.qubit_labels if label not in selected]
+
+    def get_confusion_matrix(self, target: str) -> Any:
+        import numpy as np
+
+        error = self.readout_assignment_errors.get(target, self.readout_assignment_error) or 0.0
+        half = error / 2.0
+        return np.array([[1.0 - half, half], [half, 1.0 - half]], dtype=float)
+
+    def get_inverse_confusion_matrix(self, target: str) -> Any:
+        import numpy as np
+
+        return np.linalg.inv(self.get_confusion_matrix(target))
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def connect(self, *args: Any, **kwargs: Any) -> "FakeExperiment":
+        self._connected = True
+        return self
+
+    def disconnect(self) -> None:
+        self._connected = False
+
+    def check_status(self) -> None:
+        return None
+
+    def linkup(self, *args: Any, **kwargs: Any) -> None:
+        self._connected = True
+
+    def resync_clocks(self, *args: Any, **kwargs: Any) -> bool:
+        return True
+
+    def configure(self, *args: Any, **kwargs: Any) -> None:
+        self._connected = True
+
+    def reload(self) -> None:
+        return None
+
+    def reset_awg_and_capunits(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def register_custom_target(self, label: str, target: Any | None = None, **kwargs: Any) -> Any:
+        resolved = target or SimpleNamespace(label=label, **kwargs)
+        self.properties.setdefault("custom_targets", {})[label] = resolved
+        return resolved
+
+    @contextmanager
+    def modified_frequencies(self, *args: Any, **kwargs: Any) -> Any:
+        yield self
+
+    def save_calib_note(self, path: Path | str | None = None) -> None:
+        if path is not None:
+            Path(path).write_text(json.dumps(self.model(), indent=2) + "\n", encoding="utf-8")
+
+    def save_defaults(self) -> None:
+        return None
+
+    def clear_defaults(self) -> None:
+        self.properties.clear()
+
+    def delete_defaults(self) -> None:
+        self.clear_defaults()
+
+    def load_record(self, path: Path | str) -> Any:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+
+    def validate_rabi_params(self, *args: Any, **kwargs: Any) -> bool:
+        return True
+
+    def get_hpi_pulse(self, target: str, *args: Any, **kwargs: Any) -> Any:
+        return self.x90(target)
+
+    def get_pi_pulse(self, target: str, *args: Any, **kwargs: Any) -> Any:
+        return self.x180(target)
+
+    def get_drag_hpi_pulse(self, target: str, *args: Any, **kwargs: Any) -> Any:
+        return self.x90(target)
+
+    def get_drag_pi_pulse(self, target: str, *args: Any, **kwargs: Any) -> Any:
+        return self.x180(target)
+
+    def get_pulse_for_state(self, target: str, state: int | str, *args: Any, **kwargs: Any) -> Any:
+        return self.x180(target) if str(state) in {"1", "e"} else self.x90(target).scaled(0.0)
+
+    def calc_control_amplitude(
+        self,
+        target: str,
+        rabi_rate: float | None = None,
+        *,
+        angle: float | None = None,
+        **_: Any,
+    ) -> float:
+        del target
+        if rabi_rate is None:
+            if angle is not None:
+                return float(angle) / self.pi_duration
+            rabi_rate = 1.0 / (2.0 * self.pi_duration)
+        return float(rabi_rate) * 2.0 * self.pi_duration
+
+    def calc_control_amplitudes(
+        self,
+        targets: Collection[str] | str | None = None,
+        rabi_rate: float | None = None,
+        **kwargs: Any,
+    ) -> dict[str, float]:
+        return {
+            target: self.calc_control_amplitude(target, rabi_rate=rabi_rate, **kwargs)
+            for target in self._target_labels(targets)
+        }
+
+    def calc_rabi_rate(self, target: str, amplitude: float = 1.0, **_: Any) -> float:
+        del target
+        return float(amplitude) / (2.0 * self.pi_duration)
+
+    def calc_rabi_rates(
+        self,
+        targets: Collection[str] | str | None = None,
+        amplitude: float = 1.0,
+        **kwargs: Any,
+    ) -> dict[str, float]:
+        return {
+            target: self.calc_rabi_rate(target, amplitude=amplitude, **kwargs)
+            for target in self._target_labels(targets)
+        }
+
     def calibrate_drag_hpi_pulse(
         self,
         targets: Collection[str] | str | None = None,
@@ -97,9 +822,12 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Calibrate DRAG half-pi pulses with an experiment-like API."""
-        np, _pd, qx, _qt, Result, _StateClassifierGMM, Control, QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, Result, _StateClassifierGMM, Control, QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            return self._lightweight_drag_calibration(targets, angle=1.5707963267948966)
         simulator = QuantumSimulator(self._qx_system())
         target_labels = self._target_labels(targets)
         data: dict[str, Any] = {}
@@ -137,9 +865,12 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Calibrate DRAG pi pulses from the same DRAG beta estimate."""
-        np, _pd, _qx, _qt, Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, _qx, _qt, Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            return self._lightweight_drag_calibration(targets, angle=3.141592653589793)
         data: dict[str, Any] = {}
         for target in self._target_labels(targets):
             index = self.qubit_labels.index(target)
@@ -165,9 +896,12 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Obtain echoed ZX90 CR parameters with a QUBEX-like API."""
-        np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            return self._lightweight_cr_params(control_qubit, target_qubit)
         simulator = QuantumSimulator(self._qx_system())
         control_index = self.qubit_labels.index(control_qubit)
         target_index = self.qubit_labels.index(target_qubit)
@@ -435,9 +1169,19 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Fine tune the calibrated echoed ZX90 amplitude with qxsimulator."""
-        np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            if f"{control_qubit}-{target_qubit}" not in self.cr_params:
+                self._lightweight_cr_params(control_qubit, target_qubit)
+            return self._result(
+                data={
+                    "cr_param": dict(self.cr_params[f"{control_qubit}-{target_qubit}"]),
+                    "fit": {"argmin": self.cr_params[f"{control_qubit}-{target_qubit}"]["cr_amplitude"]},
+                }
+            )
         cr_label = f"{control_qubit}-{target_qubit}"
         if cr_label not in self.cr_params:
             self.obtain_cr_params(control_qubit, target_qubit, plot=False)
@@ -520,11 +1264,139 @@ class FakeExperiment:
             figures=figures,
         )
 
+    def correct_rabi_params(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"corrected": "rabi_params"})
+
+    def correct_classifiers(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"corrected": "classifiers"})
+
+    def correct_cr_params(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"corrected": "cr_params"})
+
+    def correct_calibration(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"corrected": "calibration"})
+
+    def calibrate_default_pulse(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_drag_hpi_pulse(targets, **kwargs)
+
+    def calibrate_hpi_pulse(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_drag_hpi_pulse(targets, **kwargs)
+
+    def calibrate_pi_pulse(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_drag_pi_pulse(targets, **kwargs)
+
+    def calibrate_ef_pulse(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_ef_hpi_pulse(targets, **kwargs)
+
+    def calibrate_ef_hpi_pulse(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        result = self.calibrate_drag_hpi_pulse(targets, **kwargs)
+        for target in self._target_labels(targets):
+            self.ef_hpi_pulses[target] = self.drag_hpi_pulses[target]
+        return result
+
+    def calibrate_ef_pi_pulse(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        result = self.calibrate_drag_pi_pulse(targets, **kwargs)
+        for target in self._target_labels(targets):
+            self.ef_pi_pulses[target] = self.drag_pi_pulses[target]
+        return result
+
+    def calibrate_drag_amplitude(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_drag_hpi_pulse(targets, **kwargs)
+
+    def calibrate_drag_beta(
+        self,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        import numpy as np
+
+        data = {}
+        for target in self._target_labels(targets):
+            index = self.qubit_labels.index(target)
+            data[target] = -0.5 / (2 * np.pi * self.qubit_anharmonicities[index])
+        return self._result(data=data)
+
+    def measure_cr_dynamics(
+        self,
+        control_qubit: str,
+        target_qubit: str,
+        **kwargs: Any,
+    ) -> Any:
+        return self.obtain_cr_params(control_qubit, target_qubit, **kwargs)
+
+    def measure_cr_crosstalk(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"crosstalk": 0.0})
+
+    def cr_crosstalk_hamiltonian_tomography(self, *args: Any, **kwargs: Any) -> Any:
+        return self.measure_cr_crosstalk(*args, **kwargs)
+
+    def cr_hamiltonian_tomography(
+        self,
+        control_qubit: str,
+        target_qubit: str,
+        **kwargs: Any,
+    ) -> Any:
+        return self.obtain_cr_params(control_qubit, target_qubit, **kwargs)
+
+    def update_cr_params(self, control_qubit: str, target_qubit: str, **params: Any) -> Any:
+        label = f"{control_qubit}-{target_qubit}"
+        current = self.cr_params.setdefault(label, {})
+        current.update(params)
+        return self._result(data={"cr_param": dict(current)})
+
+    def calibrate_1q(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_drag_hpi_pulse(targets, **kwargs)
+
+    def calibrate_2q(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        results = {}
+        for control, target in self.get_cr_pairs(targets):
+            results[f"{control}-{target}"] = self.obtain_cr_params(control, target, **kwargs)
+        return self._result(data=results)
+
     def zx90(self, control_qubit: str, target_qubit: str) -> Any:
         """Build the calibrated echoed ZX90 pulse schedule."""
-        np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            return self._lightweight_zx90(control_qubit, target_qubit)
         cr_label = f"{control_qubit}-{target_qubit}"
         if cr_label not in self.cr_params:
             self.obtain_cr_params(control_qubit, target_qubit, plot=False)
@@ -607,36 +1479,40 @@ class FakeExperiment:
         return self.drag_pi_pulses[target]
 
     def y90(self, target: str) -> Any:
-        return self.x90(target).shifted(0.5 * _simulation_dependencies()[0].pi)
+        import numpy as np
+
+        return self.x90(target).shifted(0.5 * np.pi)
 
     def y90m(self, target: str) -> Any:
-        return self.x90(target).shifted(-0.5 * _simulation_dependencies()[0].pi)
+        import numpy as np
+
+        return self.x90(target).shifted(-0.5 * np.pi)
 
     def y180(self, target: str) -> Any:
-        return self.x180(target).shifted(0.5 * _simulation_dependencies()[0].pi)
+        import numpy as np
+
+        return self.x180(target).shifted(0.5 * np.pi)
 
     def z90(self) -> Any:
-        _np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
-        return qx.pulse.VirtualZ(0.5 * _np.pi)
+        import numpy as np
+        import qubex as qx
+
+        return qx.pulse.VirtualZ(0.5 * np.pi)
 
     def z180(self) -> Any:
-        _np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
-        return qx.pulse.VirtualZ(_np.pi)
+        import numpy as np
+        import qubex as qx
+
+        return qx.pulse.VirtualZ(np.pi)
 
     def hadamard(self, target: str) -> Any:
-        _np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        import qubex as qx
+
         return qx.PulseArray([self.z180(), self.y90(target)])
 
     def readout(self, target: str) -> Any:
-        _np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        import qubex as qx
+
         return qx.pulse.FlatTop(
             duration=self.readout_duration,
             amplitude=1.0,
@@ -655,6 +1531,36 @@ class FakeExperiment:
             schedule.add(control_qubit, qx.pulse.VirtualZ(-0.5 * _np.pi))
             schedule.add(target_qubit, self.x90(target_qubit).scaled(-1))
         return schedule
+
+    def rzx(
+        self,
+        control_qubit: str,
+        target_qubit: str,
+        angle: float = 1.5707963267948966,
+        **_: Any,
+    ) -> Any:
+        """Build a fake RZX schedule by scaling the calibrated ZX90 pulse."""
+        return self.zx90(control_qubit, target_qubit).scaled(float(angle) / 1.5707963267948966)
+
+    def rzx_gate_property(
+        self,
+        control_qubit: str,
+        target_qubit: str,
+        angle: float = 1.5707963267948966,
+        **_: Any,
+    ) -> dict[str, Any]:
+        duration = self.rzx90_duration
+        if duration is None:
+            if f"{control_qubit}-{target_qubit}" not in self.cr_params:
+                self.obtain_cr_params(control_qubit, target_qubit, plot=False)
+            duration = self.rzx90_duration
+        return {
+            "gate": "rzx",
+            "control": control_qubit,
+            "target": target_qubit,
+            "angle": float(angle),
+            "duration": duration,
+        }
 
     def cnot(
         self,
@@ -675,6 +1581,231 @@ class FakeExperiment:
             schedule.add(control_qubit, qx.pulse.VirtualZ(-0.5 * _np.pi))
             schedule.add(target_qubit, self.x90(target_qubit).scaled(-1))
         return schedule
+
+    def cz(self, control_qubit: str, target_qubit: str, **_: Any) -> Any:
+        """Build a CZ-equivalent schedule from H-CX-H on the target."""
+        _np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
+            _simulation_dependencies()
+        )
+        with qx.PulseSchedule([control_qubit, target_qubit]) as schedule:
+            schedule.add(target_qubit, self.hadamard(target_qubit))
+            schedule.call(self.cx(control_qubit, target_qubit))
+            schedule.add(target_qubit, self.hadamard(target_qubit))
+        return schedule
+
+    def build_measurement_schedule(
+        self,
+        schedule: Any | None = None,
+        *,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        """Build a pulse schedule with readout pulses appended."""
+        _np, _pd, qx, _qt, _Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
+            _simulation_dependencies()
+        )
+        labels = self._target_labels(targets)
+        channels = list(labels) + [self.resolve_read_label(label) for label in labels]
+        with qx.PulseSchedule(channels) as measurement_schedule:
+            if schedule is not None:
+                measurement_schedule.call(schedule)
+            measurement_schedule.barrier()
+            for label in labels:
+                measurement_schedule.add(self.resolve_read_label(label), self.readout(label))
+        return measurement_schedule
+
+    async def run_measurement(self, *args: Any, **kwargs: Any) -> Any:
+        return self.execute(*args, **kwargs)
+
+    async def run_sweep_measurement(
+        self,
+        schedule: Any,
+        sweep_values: Collection[Any],
+        **kwargs: Any,
+    ) -> Any:
+        return self.sweep_parameter(schedule, values=sweep_values, **kwargs)
+
+    async def run_ndsweep_measurement(
+        self,
+        schedule: Any,
+        sweep_points: Mapping[str, Collection[Any]],
+        sweep_axes: tuple[str, ...] | list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        del schedule
+        return self._fake_ndsweep_result(
+            sweep_points,
+            sweep_axes,
+            targets=kwargs.get("targets"),
+        )
+
+    def check_noise(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"noise": 0.0})
+
+    def execute(
+        self,
+        schedule: Any | None = None,
+        *,
+        targets: Collection[str] | str | None = None,
+        n_shots: int | None = None,
+        shots: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Execute a schedule with qxsimulator and return state probabilities."""
+        labels = self._target_labels(targets)
+        del schedule
+        shot_count = shots or n_shots or 1024
+        if "mode" in kwargs or kwargs.get("return_measure_result", True):
+            return self._fake_measure_result(labels, shots=shot_count, mode=kwargs.get("mode", "avg"))
+        probabilities = {
+            label: {"0": 1.0, "1": 0.0}
+            for label in labels
+        }
+        counts = {
+            "".join("0" for _ in labels): shot_count,
+        }
+        return self._result(
+            data={
+                "probabilities": probabilities,
+                "counts": counts,
+                "targets": labels,
+                "shots": shot_count,
+            }
+        )
+
+    def capture_loopback(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"samples": []})
+
+    def measure(
+        self,
+        schedule: Any | None = None,
+        *,
+        sequence: Any | None = None,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if schedule is None:
+            schedule = sequence
+        return self.execute(schedule, targets=targets, **kwargs)
+
+    def measure_state(
+        self,
+        state: Mapping[str, str] | str | None = None,
+        *,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        labels = self._target_labels(targets)
+        probabilities = {label: {0: 1.0, 1: 0.0} for label in labels}
+        if isinstance(state, Mapping):
+            for label, value in state.items():
+                probabilities[label] = {0: float(str(value) == "0"), 1: float(str(value) == "1")}
+        return self._result(data={"probabilities": probabilities, "state": state})
+
+    def measure_idle_states(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.measure_state("0", targets=targets, **kwargs)
+
+    def obtain_reference_points(
+        self,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        labels = self._target_labels(targets)
+        references = {
+            label: {0: complex(-1.0, 0.0), 1: complex(1.0, 0.0)} for label in labels
+        }
+        return self._result(data={"reference_points": references})
+
+    def sweep_parameter(
+        self,
+        sequence: Any,
+        values: Collection[Any] | None = None,
+        *,
+        sweep_range: Collection[Any] | None = None,
+        parameter_name: str = "parameter",
+        **kwargs: Any,
+    ) -> Any:
+        del parameter_name
+        if values is None:
+            values = sweep_range
+        if values is None:
+            values = []
+        results = []
+        for value in values:
+            schedule = sequence(value) if callable(sequence) else sequence
+            results.append(self.execute(schedule, **kwargs))
+        targets = self._target_labels(kwargs.get("targets"))
+        return self._fake_sweep_result(targets, list(values), results=results)
+
+    def _fake_measure_result(
+        self,
+        targets: Collection[str] | str | None = None,
+        *,
+        shots: int = 1024,
+        mode: str | None = None,
+    ) -> _FakeMeasureResult:
+        import numpy as np
+
+        labels = self._target_labels(targets)
+        data = {}
+        for index, target in enumerate(labels):
+            center = complex(0.1 + index * 0.05, 0.2)
+            if mode == "single":
+                kerneled = np.full(shots, center, dtype=complex)
+            else:
+                kerneled = np.asarray([center], dtype=complex)
+            captures = [
+                SimpleNamespace(data=np.asarray([center], dtype=complex), kerneled=kerneled)
+            ]
+            data[target] = _FakeTargetMeasurement(kerneled=kerneled, data=captures)
+        return _FakeMeasureResult(data)
+
+    def _fake_sweep_result(
+        self,
+        targets: Collection[str] | str | None,
+        sweep_values: list[Any],
+        *,
+        results: list[Any] | None = None,
+    ) -> _FakeSweepResult:
+        import numpy as np
+
+        labels = self._target_labels(targets)
+        values = np.asarray(sweep_values)
+        data = {}
+        for index, target in enumerate(labels):
+            response = 0.5 + 0.5 * np.sin(np.linspace(0.0, 2.0 * np.pi, len(values)) + index)
+            data[target] = _FakeSweepTargetData(target, values, response)
+        return _FakeSweepResult(data=data, sweep_values=values, results=results)
+
+    def _fake_ndsweep_result(
+        self,
+        sweep_points: Mapping[str, Collection[Any]],
+        sweep_axes: tuple[str, ...] | list[str] | None,
+        *,
+        targets: Collection[str] | str | None = None,
+    ) -> _FakeSweepResult:
+        import itertools
+        import numpy as np
+
+        axes = tuple(sweep_axes or sweep_points.keys())
+        values_by_axis = {axis: list(sweep_points[axis]) for axis in axes}
+        shape = tuple(len(values_by_axis[axis]) for axis in axes)
+        flat_points = [dict(zip(axes, values, strict=True)) for values in itertools.product(*(values_by_axis[axis] for axis in axes))]
+        labels = self._target_labels(targets)
+        data = {
+            target: [np.zeros(shape, dtype=complex)]
+            for target in labels
+        }
+        return _FakeSweepResult(
+            data=data,
+            results=[self._fake_measure_result(labels) for _ in flat_points],
+            shape=shape,
+            sweep_points=flat_points,
+        )
 
     def resolve_read_label(self, target: str, allow_legacy: bool = False) -> str:
         return f"R{target}"
@@ -716,9 +1847,20 @@ class FakeExperiment:
         _simulator: Any | None = None,
     ) -> Any:
         """Repeat a pulse or pulse schedule and return a QUBEX-style result."""
-        np, pd, qx, _qt, Result, _StateClassifierGMM, Control, QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, pd, qx, _qt, Result, _StateClassifierGMM, Control, QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            import numpy as np
+
+            repeats = np.arange(repetitions + 1)
+            p1 = np.sin(repeats * np.pi / 2.0) ** 2
+            rows = [
+                {"repeats": int(repeat), "0": float(1.0 - value), "1": float(value)}
+                for repeat, value in zip(repeats, p1, strict=True)
+            ]
+            return self._result(data={"dataframe": rows, "repeats": repeats, "p1": p1})
         simulator = _simulator or QuantumSimulator(self._qx_system())
         initial = {label: "0" for label in self.qubit_labels}
         if initial_state:
@@ -799,9 +1941,12 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Run simulated pulse tomography with the QUBEX experiment API shape."""
-        np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            return self._lightweight_pulse_tomography(sequence, initial_state=initial_state)
         initial = {label: "0" for label in self.qubit_labels}
         if initial_state:
             initial.update(initial_state)
@@ -841,9 +1986,12 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Measure a simulated Bell state in the requested Pauli basis."""
-        np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            return self._lightweight_bell_state(control_basis=control_basis, target_basis=target_basis)
         control_basis = control_basis or "Z"
         target_basis = target_basis or "Z"
         schedule = self._bell_measurement_schedule(
@@ -895,9 +2043,29 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Perform lightweight Bell-state tomography from simulated basis probabilities."""
-        np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            import numpy as np
+
+            rho = np.array(
+                [
+                    [0.5, 0.0, 0.0, 0.5],
+                    [0.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0],
+                    [0.5, 0.0, 0.0, 0.5],
+                ],
+                dtype=complex,
+            )
+            return self._result(
+                data={
+                    "density_matrix": rho,
+                    "fidelity": 1.0,
+                    "mle_fit": bool(mle_fit),
+                }
+            )
         probabilities = {}
         for control_basis in ("X", "Y", "Z"):
             for target_basis in ("X", "Y", "Z"):
@@ -1104,9 +2272,12 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Generate synthetic IQ distributions for classifier calibration."""
-        np, _pd, _qx, _qt, Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, _qx, _qt, Result, _StateClassifierGMM, _Control, _QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            return self._lightweight_state_distribution(targets, n_states=n_states, n_shots=n_shots)
         rng = np.random.default_rng(7)
         centers = {0: 0.10 + 0.02j, 1: 0.86 + 0.34j, 2: 1.14 - 0.20j}
         sigma = 0.16
@@ -1131,9 +2302,35 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Build synthetic state classifiers with the QUBEX experiment API shape."""
-        np, _pd, qx, _qt, Result, StateClassifierGMM, _Control, _QuantumSimulator = (
-            _simulation_dependencies()
-        )
+        try:
+            np, _pd, qx, _qt, Result, StateClassifierGMM, _Control, _QuantumSimulator = (
+                _simulation_dependencies()
+            )
+        except ImportError:
+            distributions = self._lightweight_state_distribution(
+                targets,
+                n_states=n_states,
+                n_shots=n_shots,
+            )["distributions"]
+            classifiers = {
+                target: SimpleNamespace(
+                    target=target,
+                    n_states=n_states,
+                    classify=lambda values, _target=target: [0 for _ in values],
+                    plot=lambda *args, **kwargs: None,
+                )
+                for target in self._target_labels(targets)
+            }
+            self.classifiers.update(classifiers)
+            return self._result(
+                data={
+                    "classifiers": classifiers,
+                    "distributions": distributions,
+                    "fidelities": {
+                        target: 1.0 for target in self._target_labels(targets)
+                    },
+                }
+            )
         target_labels = self._target_labels(targets)
         distributions = self.measure_state_distribution(
             target_labels,
@@ -1251,19 +2448,26 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Run pulse-schedule RB through qxsimulator with the QUBEX API shape."""
-        return self._rb_experiment(
-            targets,
-            n_cliffords_range=n_cliffords_range,
-            n_trials=n_trials,
-            seeds=seeds,
-            max_n_cliffords=max_n_cliffords,
-            x90=x90,
-            zx90=zx90,
-            interleaved_clifford=None,
-            interleaved_waveform=None,
-            plot=plot,
-            include_decoherence=include_decoherence,
-        )
+        try:
+            return self._rb_experiment(
+                targets,
+                n_cliffords_range=n_cliffords_range,
+                n_trials=n_trials,
+                seeds=seeds,
+                max_n_cliffords=max_n_cliffords,
+                x90=x90,
+                zx90=zx90,
+                interleaved_clifford=None,
+                interleaved_waveform=None,
+                plot=plot,
+                include_decoherence=include_decoherence,
+            )
+        except ImportError:
+            return self._lightweight_rb_result(
+                targets,
+                n_cliffords_range=n_cliffords_range,
+                max_n_cliffords=max_n_cliffords,
+            )
 
     def interleaved_randomized_benchmarking(
         self,
@@ -1282,21 +2486,374 @@ class FakeExperiment:
         **_: Any,
     ) -> Any:
         """Run interleaved pulse-schedule RB through qxsimulator."""
-        if isinstance(interleaved_clifford, str):
-            interleaved_clifford = self.clifford[interleaved_clifford]
-        return self._rb_experiment(
-            targets,
-            n_cliffords_range=n_cliffords_range,
-            n_trials=n_trials,
-            seeds=seeds,
-            max_n_cliffords=max_n_cliffords,
-            x90=x90,
-            zx90=zx90,
-            interleaved_clifford=interleaved_clifford,
-            interleaved_waveform=interleaved_waveform,
+        try:
+            if isinstance(interleaved_clifford, str):
+                interleaved_clifford = self.clifford[interleaved_clifford]
+            return self._rb_experiment(
+                targets,
+                n_cliffords_range=n_cliffords_range,
+                n_trials=n_trials,
+                seeds=seeds,
+                max_n_cliffords=max_n_cliffords,
+                x90=x90,
+                zx90=zx90,
+                interleaved_clifford=interleaved_clifford,
+                interleaved_waveform=interleaved_waveform,
+                plot=plot,
+                include_decoherence=include_decoherence,
+            )
+        except ImportError:
+            return self._lightweight_rb_result(
+                targets,
+                n_cliffords_range=n_cliffords_range,
+                max_n_cliffords=max_n_cliffords,
+                interleaved_clifford=interleaved_clifford,
+            )
+
+    def check_waveform(self, waveform: Any | None = None, **_: Any) -> Any:
+        return self._result(data={"waveform": waveform, "ok": True})
+
+    def check_rabi(
+        self,
+        targets: Collection[str] | str | None = None,
+        *,
+        time_range: Any | None = None,
+        store_params: bool | None = None,
+        rabi_level: str | None = None,
+        plot: bool | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if rabi_level is None:
+            rabi_level = "ge"
+        labels = self._target_labels(targets)
+        amplitudes = {target: 1.0 for target in labels}
+        if rabi_level == "ef":
+            return self.ef_rabi_experiment(
+                amplitudes=amplitudes,
+                time_range=time_range,
+                store_params=store_params,
+                plot=plot,
+                **kwargs,
+            )
+        return self.rabi_experiment(
+            amplitudes=amplitudes,
+            time_range=time_range,
+            store_params=store_params,
             plot=plot,
-            include_decoherence=include_decoherence,
+            **kwargs,
         )
+
+    def obtain_rabi_params(
+        self,
+        targets: Collection[str] | str | None = None,
+        *,
+        time_range: Any | None = None,
+        amplitudes: dict[str, float] | None = None,
+        frequencies: dict[str, float] | None = None,
+        is_damped: bool | None = None,
+        fit_threshold: float | None = None,
+        plot: bool | None = None,
+        store_params: bool | None = None,
+        simultaneous: bool | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        del frequencies, is_damped, fit_threshold, simultaneous
+        labels = self._target_labels(targets)
+        amplitudes = amplitudes or {target: 1.0 for target in labels}
+        return self.rabi_experiment(
+            amplitudes=amplitudes,
+            time_range=time_range,
+            plot=plot,
+            store_params=True if store_params is None else store_params,
+            **kwargs,
+        )
+
+    def obtain_ef_rabi_params(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        labels = self._target_labels(targets)
+        amplitudes = kwargs.pop("amplitudes", None) or {target: 1.0 for target in labels}
+        return self.ef_rabi_experiment(amplitudes=amplitudes, **kwargs)
+
+    def rabi_experiment(
+        self,
+        targets: Collection[str] | str | None = None,
+        *,
+        amplitudes: dict[str, float] | None = None,
+        time_range: Any | None = None,
+        ramptime: float | None = None,
+        frequencies: dict[str, float] | None = None,
+        detuning: float | None = None,
+        is_damped: bool | None = None,
+        fit_threshold: float | None = None,
+        n_shots: int | None = None,
+        shot_interval: float | None = None,
+        plot: bool | None = None,
+        store_params: bool | None = None,
+        **_: Any,
+    ) -> Any:
+        del frequencies, detuning, is_damped, fit_threshold, n_shots, shot_interval, plot
+        labels = self._target_labels(targets) if amplitudes is None else list(amplitudes)
+        amplitudes = amplitudes or {target: 1.0 for target in labels}
+        return self._rabi_result(
+            amplitudes=amplitudes,
+            time_range=time_range,
+            ramptime=ramptime,
+            store_params=bool(store_params),
+            transition="ge",
+        )
+
+    def ef_rabi_experiment(
+        self,
+        targets: Collection[str] | str | None = None,
+        *,
+        amplitudes: dict[str, float] | None = None,
+        time_range: Any | None = None,
+        ramptime: float | None = None,
+        frequencies: dict[str, float] | None = None,
+        detuning: float | None = None,
+        is_damped: bool | None = None,
+        n_shots: int | None = None,
+        shot_interval: float | None = None,
+        plot: bool | None = None,
+        store_params: bool | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        del frequencies, detuning, is_damped, n_shots, shot_interval, plot, kwargs
+        labels = self._target_labels(targets) if amplitudes is None else list(amplitudes)
+        amplitudes = amplitudes or {target: 1.0 for target in labels}
+        return self._rabi_result(
+            amplitudes=amplitudes,
+            time_range=time_range,
+            ramptime=ramptime,
+            store_params=bool(store_params),
+            transition="ef",
+        )
+
+    def state_tomography(self, sequence: Any, **kwargs: Any) -> Any:
+        return self.pulse_tomography(sequence, **kwargs)
+
+    def state_evolution_tomography(self, sequence: Any, **kwargs: Any) -> Any:
+        return self.pulse_tomography(sequence, **kwargs)
+
+    def measure_population(self, sequence: Any, **kwargs: Any) -> Any:
+        tomography = self.pulse_tomography(sequence, plot=False, **kwargs)
+        data = {}
+        for target, vectors in tomography["data"].items():
+            data[target] = (1.0 - vectors[-1][2]) / 2.0
+        return self._result(data=data)
+
+    def measure_population_dynamics(self, sequence: Any, **kwargs: Any) -> Any:
+        return self.pulse_tomography(sequence, **kwargs)
+
+    def measure_readout_snr(
+        self,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        return self._result(data={target: 8.0 for target in self._target_labels(targets)})
+
+    def sweep_readout_amplitude(self, *args: Any, **kwargs: Any) -> Any:
+        return self._sweep_stub("readout_amplitude", *args, **kwargs)
+
+    def sweep_readout_duration(self, *args: Any, **kwargs: Any) -> Any:
+        return self._sweep_stub("readout_duration", *args, **kwargs)
+
+    def chevron_pattern(self, *args: Any, **kwargs: Any) -> Any:
+        return self._sweep_stub("chevron", *args, **kwargs)
+
+    def obtain_freq_rabi_relation(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"slope": 1.0, "intercept": 0.0})
+
+    def obtain_ampl_rabi_relation(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"slope": 1.0, "intercept": 0.0})
+
+    def calibrate_control_frequency(
+        self,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        return self._result(
+            data={
+                target: self.qubit_frequencies[self.qubit_labels.index(target)]
+                for target in self._target_labels(targets)
+            }
+        )
+
+    def calibrate_ef_control_frequency(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_control_frequency(targets, **kwargs)
+
+    def calibrate_readout_frequency(
+        self,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        return self._result(
+            data={
+                target: self.readout_frequencies[self.qubit_labels.index(target)]
+                for target in self._target_labels(targets)
+            }
+        )
+
+    def t1_experiment(
+        self,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        return self._result(
+            data={
+                target: self._qubit_lifetime(self.qubit_labels.index(target))[0]
+                for target in self._target_labels(targets)
+            }
+        )
+
+    def t2_experiment(
+        self,
+        targets: Collection[str] | str | None = None,
+        **_: Any,
+    ) -> Any:
+        return self._result(
+            data={
+                target: self._qubit_lifetime(self.qubit_labels.index(target))[1]
+                for target in self._target_labels(targets)
+            }
+        )
+
+    def ramsey_experiment(self, *args: Any, **kwargs: Any) -> Any:
+        return self.t2_experiment(*args, **kwargs)
+
+    def obtain_effective_control_frequency(self, *args: Any, **kwargs: Any) -> Any:
+        return self.calibrate_control_frequency(*args, **kwargs)
+
+    def jazz_experiment(self, *args: Any, **kwargs: Any) -> Any:
+        return self._sweep_stub("jazz", *args, **kwargs)
+
+    def obtain_coupling_strength(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"coupling_strength": self.coupling_strength})
+
+    def scan_resonator_frequencies(
+        self,
+        target: str | None = None,
+        *,
+        frequency_range: Any | None = None,
+        **_: Any,
+    ) -> Any:
+        import numpy as np
+
+        del target
+        if frequency_range is None:
+            values = np.asarray(self.readout_frequencies)
+        else:
+            values = np.asarray(frequency_range, dtype=float)
+        if len(values) >= 4:
+            indices = np.linspace(0, len(values) - 1, 4, dtype=int)
+            peaks = [float(values[index]) for index in indices]
+        else:
+            peaks = list(map(float, self.readout_frequencies[:4]))
+        return self._result(
+            data={
+                "frequency_range": values,
+                "response": np.zeros_like(values, dtype=float),
+                "peaks": peaks,
+            }
+        )
+
+    def resonator_spectroscopy(self, *args: Any, **kwargs: Any) -> Any:
+        return self.scan_resonator_frequencies(*args, **kwargs)
+
+    def measure_reflection_coefficient(self, target: str, **_: Any) -> Any:
+        index = self.qubit_labels.index(target)
+        return self._result(data={"target": target, "f_r": self.readout_frequencies[index]})
+
+    def scan_qubit_frequencies(
+        self,
+        target: str,
+        *,
+        frequency_range: Any | None = None,
+        **_: Any,
+    ) -> Any:
+        import numpy as np
+
+        index = self.qubit_labels.index(target)
+        values = (
+            np.asarray(frequency_range, dtype=float)
+            if frequency_range is not None
+            else np.linspace(
+                self.qubit_frequencies[index] - 0.1,
+                self.qubit_frequencies[index] + 0.1,
+                101,
+            )
+        )
+        return self._result(
+            data={
+                "target": target,
+                "frequency_range": values,
+                "response": np.zeros_like(values, dtype=float),
+                "f_q": self.qubit_frequencies[index],
+            }
+        )
+
+    def qubit_spectroscopy(self, *args: Any, **kwargs: Any) -> Any:
+        return self.scan_qubit_frequencies(*args, **kwargs)
+
+    def measure_qubit_resonance(self, target: str, **kwargs: Any) -> Any:
+        return self.scan_qubit_frequencies(target, **kwargs)
+
+    def measure_electrical_delay(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"delay": 0.0})
+
+    def find_optimal_readout_frequency(self, target: str, **kwargs: Any) -> Any:
+        return self.measure_reflection_coefficient(target, **kwargs)
+
+    def find_optimal_readout_amplitude(self, target: str, **_: Any) -> Any:
+        return self._result(data={"target": target, "readout_amplitude": 0.1})
+
+    def characterize_1q(self, targets: Collection[str] | str | None = None, **_: Any) -> Any:
+        return self._result(
+            data={
+                "t1": self.t1_experiment(targets),
+                "t2": self.t2_experiment(targets),
+                "readout_snr": self.measure_readout_snr(targets),
+            }
+        )
+
+    def characterize_2q(self, targets: Collection[str] | str | None = None, **_: Any) -> Any:
+        return self.calibrate_2q(targets, plot=False)
+
+    def benchmark_1q(self, targets: Collection[str] | str | None = None, **kwargs: Any) -> Any:
+        return self.randomized_benchmarking(targets or self.qubit_labels[0], **kwargs)
+
+    def benchmark_2q(self, targets: Collection[str] | str | None = None, **kwargs: Any) -> Any:
+        pair = self.get_cr_pairs(targets)[0]
+        return self.randomized_benchmarking(list(pair), **kwargs)
+
+    def purity_benchmarking(self, *args: Any, **kwargs: Any) -> Any:
+        return self.randomized_benchmarking(*args, **kwargs)
+
+    def interleaved_purity_benchmarking(self, *args: Any, **kwargs: Any) -> Any:
+        return self.interleaved_randomized_benchmarking(*args, **kwargs)
+
+    def optimize_x90(self, targets: Collection[str] | str | None = None, **kwargs: Any) -> Any:
+        return self.calibrate_drag_hpi_pulse(targets, **kwargs)
+
+    def optimize_drag_x90(
+        self,
+        targets: Collection[str] | str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.calibrate_drag_hpi_pulse(targets, **kwargs)
+
+    def optimize_pulse(self, *args: Any, **kwargs: Any) -> Any:
+        return self._result(data={"optimized": True})
+
+    def optimize_zx90(self, control_qubit: str, target_qubit: str, **kwargs: Any) -> Any:
+        return self.calibrate_zx90(control_qubit, target_qubit, **kwargs)
 
     def _rb_sequence_1q(
         self,
@@ -1635,6 +3192,340 @@ class FakeExperiment:
         if isinstance(targets, str):
             return [targets]
         return list(targets)
+
+    @staticmethod
+    def _normalize_qubit_labels(values: Collection[str | int] | None) -> tuple[str, ...] | None:
+        if values is None:
+            return None
+        labels = []
+        for value in values:
+            if isinstance(value, int):
+                labels.append(_qid_to_label(value, 100))
+            else:
+                text = str(value)
+                labels.append(_qid_to_label(int(text), 100) if text.isdigit() else text)
+        return tuple(labels)
+
+    @staticmethod
+    def _pad_float_tuple(
+        values: Collection[float] | None,
+        defaults: tuple[float, ...],
+        size: int,
+    ) -> tuple[float, ...]:
+        source = tuple(float(value) for value in (values or defaults))
+        if len(source) >= size:
+            return source[:size]
+        return source + tuple(source[-1] for _ in range(size - len(source)))
+
+    def _result(
+        self,
+        *,
+        data: Any | None = None,
+        figure: Any | None = None,
+        figures: Mapping[str, Any] | None = None,
+    ) -> Any:
+        try:
+            from qubex.experiment.models.result import Result
+        except ImportError:
+            return _FallbackResult(data=data, figure=figure, figures=dict(figures or {}))
+        return Result(data=data, figure=figure, figures=dict(figures or {}))
+
+    def _sweep_stub(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        import numpy as np
+
+        values = kwargs.get("values", np.linspace(0.0, 1.0, 11))
+        return self._result(
+            data={
+                "name": name,
+                "values": values,
+                "response": np.zeros(len(values), dtype=float),
+            }
+        )
+
+    def _lightweight_drag_calibration(
+        self,
+        targets: Collection[str] | str | None,
+        *,
+        angle: float,
+    ) -> Any:
+        import numpy as np
+        import qubex as qx
+
+        data = {}
+        for target in self._target_labels(targets):
+            index = self.qubit_labels.index(target)
+            duration = self.hpi_duration if angle < np.pi else self.pi_duration
+            beta = -0.5 / (2.0 * np.pi * self.qubit_anharmonicities[index])
+            pulse = qx.pulse.Drag(
+                duration=duration,
+                amplitude=angle / np.pi,
+                beta=beta,
+                type="Gaussian",
+            )
+            if angle < np.pi:
+                self.drag_hpi_pulses[target] = pulse
+            else:
+                self.drag_pi_pulses[target] = pulse
+            data[target] = {
+                "target": target,
+                "duration": duration,
+                "amplitude": float(angle / np.pi),
+                "beta": float(beta),
+            }
+        return self._result(data=data)
+
+    def _lightweight_pulse_tomography(
+        self,
+        sequence: Any,
+        *,
+        initial_state: Mapping[str, str] | None = None,
+    ) -> Any:
+        import numpy as np
+
+        labels = self._tomography_targets(sequence)
+        initial = dict(initial_state or {})
+        times = np.linspace(0.0, 1.0, 51)
+        data = {}
+        for label in labels:
+            sign = -1.0 if initial.get(label, "0") == "1" else 1.0
+            data[label] = np.column_stack(
+                [
+                    np.zeros_like(times),
+                    np.sin(np.pi * times),
+                    sign * np.cos(np.pi * times),
+                ]
+            )
+        return self._result(data=data)
+
+    def _lightweight_rb_result(
+        self,
+        targets: Collection[str] | str,
+        *,
+        n_cliffords_range: Any | None,
+        max_n_cliffords: int | None,
+        interleaved_clifford: Any | None = None,
+    ) -> Any:
+        import numpy as np
+
+        target_label = targets if isinstance(targets, str) else "-".join(targets)
+        if n_cliffords_range is None:
+            stop = max_n_cliffords or 1000
+            n_cliffords = np.arange(0, stop + 1, max(stop // 10, 1))
+        else:
+            n_cliffords = np.asarray(list(n_cliffords_range), dtype=float)
+        decay = np.exp(-n_cliffords / max(float(n_cliffords[-1] or 1.0), 1.0) * 0.1)
+        data = {
+            target_label: SimpleNamespace(
+                target=target_label,
+                n_cliffords=n_cliffords,
+                survival_probability=decay,
+                interleaved_clifford=interleaved_clifford,
+                fidelity=float(decay[-1]),
+                plot=lambda *args, **kwargs: None,
+            )
+        }
+        return _FallbackExperimentResult(data=data, status="success")
+
+    def _lightweight_state_distribution(
+        self,
+        targets: Collection[str] | str | None,
+        *,
+        n_states: int,
+        n_shots: int,
+    ) -> Any:
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        centers = [complex(index, 0.25 * index) for index in range(n_states)]
+        distributions = []
+        for state in range(n_states):
+            shot_map = {}
+            for target in self._target_labels(targets):
+                noise = 0.05 * (rng.normal(size=n_shots) + 1j * rng.normal(size=n_shots))
+                shot_map[target] = np.full(n_shots, centers[state], dtype=complex) + noise
+            distributions.append(shot_map)
+        return self._result(data={"distributions": distributions})
+
+    def _lightweight_cr_params(self, control_qubit: str, target_qubit: str) -> Any:
+        control_index = self.qubit_labels.index(control_qubit)
+        target_index = self.qubit_labels.index(target_qubit)
+        frequency_diff = self.qubit_frequencies[control_index] - self.qubit_frequencies[target_index]
+        duration = 160.0
+        param = {
+            "control": control_qubit,
+            "target": target_qubit,
+            "duration": duration,
+            "ramptime": 16.0,
+            "cr_amplitude": 0.25 * abs(frequency_diff or 1.0),
+            "cr_phase": 0.0,
+            "cancel_amplitude": 0.01,
+            "cancel_phase": 0.0,
+            "cr_amplitude_max": 0.75 * abs(frequency_diff or 1.0),
+        }
+        label = f"{control_qubit}-{target_qubit}"
+        self.cr_params[label] = param
+        self.rzx90_duration = 2.0 * duration + 2.0 * self.pi_duration
+        self.cx_duration = self.rzx90_duration + self.hpi_duration
+        return self._result(data={"cr_param": param})
+
+    def _lightweight_zx90(self, control_qubit: str, target_qubit: str) -> Any:
+        import qubex as qx
+
+        label = f"{control_qubit}-{target_qubit}"
+        if label not in self.cr_params:
+            self._lightweight_cr_params(control_qubit, target_qubit)
+        param = self.cr_params[label]
+        with qx.PulseSchedule([control_qubit, label, target_qubit]) as schedule:
+            schedule.add(
+                label,
+                qx.pulse.FlatTop(
+                    duration=param["duration"],
+                    amplitude=param["cr_amplitude"],
+                    tau=param["ramptime"],
+                    phase=param["cr_phase"],
+                ),
+            )
+            schedule.add(
+                target_qubit,
+                qx.pulse.FlatTop(
+                    duration=param["duration"],
+                    amplitude=param["cancel_amplitude"],
+                    tau=param["ramptime"],
+                    phase=param["cancel_phase"],
+                ),
+            )
+        return schedule
+
+    def _lightweight_bell_state(
+        self,
+        *,
+        control_basis: str | None,
+        target_basis: str | None,
+    ) -> Any:
+        import numpy as np
+
+        raw = np.array([0.5, 0.0, 0.0, 0.5], dtype=float)
+        return self._result(
+            data={
+                "raw": raw,
+                "mitigated": raw.copy(),
+                "probabilities": {
+                    "00": 0.5,
+                    "01": 0.0,
+                    "10": 0.0,
+                    "11": 0.5,
+                },
+                "basis": f"{control_basis or 'Z'}{target_basis or 'Z'}",
+            }
+        )
+
+    def _rabi_result(
+        self,
+        *,
+        amplitudes: Mapping[str, float],
+        time_range: Any | None,
+        ramptime: float | None,
+        store_params: bool,
+        transition: str,
+    ) -> Any:
+        import numpy as np
+
+        try:
+            from qubex.experiment.models.experiment_result import ExperimentResult, RabiData
+            from qubex.experiment.models.rabi_param import RabiParam
+        except ImportError:
+            ExperimentResult = None
+            RabiData = None
+            RabiParam = None
+
+        if time_range is None:
+            time_range_array = np.linspace(0.0, 2.0 * self.pi_duration, 41)
+        else:
+            time_range_array = np.asarray(time_range, dtype=float)
+        effective_time_range = time_range_array + float(ramptime or 0.0)
+
+        rabi_data = {}
+        rabi_params = {}
+        for input_label, amplitude in amplitudes.items():
+            target = self._resolve_rabi_label(input_label, transition=transition)
+            frequency = self.calc_rabi_rate(target, amplitude=float(amplitude))
+            phase = 0.0
+            oscillation = np.cos(2.0 * np.pi * frequency * effective_time_range + phase)
+            data = 0.5 + 0.5j * oscillation
+
+            if RabiParam is None:
+                rabi_param = SimpleNamespace(
+                    target=target,
+                    amplitude=0.5,
+                    frequency=frequency,
+                    phase=phase,
+                    offset=0.0,
+                    noise=0.0,
+                    angle=0.0,
+                    distance=0.5,
+                    r2=1.0,
+                    reference_phase=0.0,
+                )
+            else:
+                rabi_param = RabiParam(
+                    target=target,
+                    amplitude=0.5,
+                    frequency=frequency,
+                    phase=phase,
+                    offset=0.0,
+                    noise=0.0,
+                    angle=0.0,
+                    distance=0.5,
+                    r2=1.0,
+                    reference_phase=0.0,
+                )
+            rabi_params[target] = rabi_param
+
+            if RabiData is None:
+                rabi_data[target] = SimpleNamespace(
+                    target=target,
+                    data=data,
+                    time_range=effective_time_range,
+                    rabi_param=rabi_param,
+                    state_centers=self.state_centers.get(self._ge_label(target)),
+                )
+            else:
+                rabi_data[target] = RabiData(
+                    target=target,
+                    data=data,
+                    time_range=effective_time_range,
+                    rabi_param=rabi_param,
+                    state_centers=self.state_centers.get(self._ge_label(target)),
+                )
+
+        if store_params:
+            self.store_rabi_params(rabi_params)
+
+        if ExperimentResult is None:
+            return _FallbackExperimentResult(data=rabi_data, rabi_params=rabi_params)
+        return ExperimentResult(data=rabi_data, rabi_params=rabi_params)
+
+    def _resolve_rabi_label(self, label: str, transition: str | None = None) -> str:
+        text = str(label)
+        if transition == "ef" and not self._is_ef_label(text):
+            return f"{text}/ef"
+        if transition == "ge" and self._is_ef_label(text):
+            return self._ge_label(text)
+        return text
+
+    @staticmethod
+    def _is_ef_label(label: str) -> bool:
+        return label.endswith("/ef") or label.endswith(".ef") or label.startswith("EF")
+
+    @staticmethod
+    def _ge_label(label: str) -> str:
+        if label.endswith("/ef"):
+            return label[:-3]
+        if label.endswith(".ef"):
+            return label[:-3]
+        if label.startswith("EF"):
+            return "Q" + label[2:]
+        return label
 
     def _qubit_lifetime(self, index: int) -> tuple[float, float]:
         if self.qubit_lifetimes is not None:
@@ -2043,3 +3934,44 @@ def _simulation_dependencies() -> tuple[Any, ...]:
             "qxsimulator, numpy, and pandas to be installed."
         ) from exc
     return np, pd, qx, qt, Result, StateClassifierGMM, Control, QuantumSimulator
+
+
+_UNSUPPORTED_EXPERIMENT_METHODS = {
+    "create_entangle_sequence",
+    "create_ghz_sequence",
+    "measure_ghz_state",
+    "ghz_state_tomography",
+    "create_mqc_sequence",
+    "mqc_experiment",
+    "fourier_analysis",
+    "parity_oscillation",
+    "create_1d_cluster_sequence",
+    "measure_1d_cluster_state",
+    "partial_transpose",
+    "create_connected_graphs",
+    "create_maximum_graph",
+    "create_maximum_1d_chain",
+    "create_maximum_spanning_tree",
+    "create_maximum_directed_tree",
+    "create_cz_rounds",
+    "create_graph_sequence",
+    "create_measurement_rounds",
+    "visualize_graph",
+    "measure_graph_state",
+    "measure_bell_state_fidelities",
+    "measure_bell_states",
+    "measure_electrical_delay",
+    "scan_resonator_frequencies",
+    "resonator_spectroscopy",
+    "measure_reflection_coefficient",
+    "scan_qubit_frequencies",
+    "estimate_control_amplitude",
+    "measure_qubit_resonance",
+    "qubit_spectroscopy",
+    "measure_dispersive_shift",
+    "find_optimal_readout_frequency",
+    "find_optimal_readout_amplitude",
+    "ckp_sequence",
+    "ckp_measurement",
+    "ckp_experiment",
+}
