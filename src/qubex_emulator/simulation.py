@@ -25,6 +25,200 @@ def _label_to_qid(label: str) -> int:
     return int(match.group(1))
 
 
+def _display_if_interactive(figure: Any) -> None:
+    try:
+        from IPython import get_ipython
+        from IPython.display import display
+    except Exception:
+        return
+    if get_ipython() is not None:
+        display(figure)
+
+
+def _make_figure(*, width: int | None = None, height: int | None = None) -> Any:
+    try:
+        import qubex.visualization as viz
+    except Exception:
+        try:
+            import plotly.graph_objects as go
+        except Exception:
+            return None
+        return go.Figure()
+    return viz.make_figure(width=width, height=height)
+
+
+def _show_figure(
+    figure: Any,
+    *,
+    filename: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> None:
+    try:
+        import qubex.visualization as viz
+    except Exception:
+        viz = None
+
+    try:
+        if viz is not None:
+            figure.show(config=viz.get_config(filename=filename, width=width, height=height))
+        else:
+            figure.show()
+        return
+    except Exception:
+        pass
+    _display_if_interactive(figure)
+
+
+def _make_iq_scatter_figure(data: Mapping[str, Any], *, title: str | None = None) -> Any:
+    try:
+        import qubex.visualization as viz
+    except Exception:
+        viz = None
+    if viz is not None:
+        return viz.make_iq_scatter_figure(data=data, title=title)
+
+    try:
+        import numpy as np
+        import plotly.graph_objects as go
+    except Exception:
+        return None
+
+    colors = [
+        (12, 93, 165, 0.8),
+        (0, 185, 69, 0.8),
+        (255, 149, 0, 0.8),
+        (255, 44, 0, 0.8),
+        (132, 91, 151, 0.8),
+        (71, 71, 71, 0.8),
+        (158, 158, 158, 0.8),
+    ]
+    figure = go.Figure()
+    max_abs = 0.0
+    for target, values in data.items():
+        points = np.asarray(values, dtype=complex).reshape(-1)
+        if points.size:
+            max_abs = max(max_abs, float(np.max(np.abs(points))))
+    if max_abs == 0.0:
+        max_abs = 1.0
+    axis_range = [-max_abs * 1.1, max_abs * 1.1]
+    dtick = max_abs / 2
+    for index, (target, values) in enumerate(data.items()):
+        points = np.asarray(values, dtype=complex).reshape(-1)
+        color = colors[index % len(colors)]
+        figure.add_scatter(
+            x=points.real,
+            y=points.imag,
+            mode="markers",
+            name=target,
+            text=target,
+            marker={
+                "size": 4,
+                "color": f"rgba{color}",
+            },
+        )
+    figure.update_layout(
+        title=title or "I/Q plane",
+        width=500,
+        height=400,
+        xaxis_title="In-phase (arb. units)",
+        yaxis_title="Quadrature (arb. units)",
+        margin={"l": 120, "r": 120},
+        xaxis={
+            "range": axis_range,
+            "dtick": dtick,
+            "tickformat": ".2g",
+            "showticklabels": True,
+            "zeroline": True,
+            "zerolinecolor": "black",
+            "showgrid": True,
+        },
+        yaxis={
+            "range": axis_range,
+            "scaleanchor": "x",
+            "scaleratio": 1,
+            "dtick": dtick,
+            "tickformat": ".2g",
+            "showticklabels": True,
+            "zeroline": True,
+            "zerolinecolor": "black",
+            "showgrid": True,
+        },
+    )
+    return figure
+
+
+def _plot_iq_scatter(
+    data: Mapping[str, Any],
+    *,
+    title: str | None = None,
+    return_figure: bool = False,
+) -> Any:
+    figure = _make_iq_scatter_figure(data, title=title)
+    if return_figure:
+        return figure
+    if figure is not None:
+        _show_figure(figure, filename="plot_state_distribution")
+    return None
+
+
+def _plot_iq_series(
+    *,
+    target: str,
+    x: Any,
+    data: Any,
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    filename: str,
+    xaxis_type: str | None = None,
+    yaxis_type: str | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    return_figure: bool = False,
+    **_: Any,
+) -> Any:
+    try:
+        import numpy as np
+        import plotly.graph_objects as go
+    except Exception:
+        return None
+
+    values = np.asarray(data, dtype=complex)
+    figure = _make_figure(width=width, height=height)
+    if figure is None:
+        return None
+    figure.update_layout(
+        title=title,
+        xaxis_title=xlabel,
+        yaxis_title=ylabel,
+    )
+    if xaxis_type is not None:
+        figure.update_layout(xaxis_type=xaxis_type)
+    if yaxis_type is not None:
+        figure.update_layout(yaxis_type=yaxis_type)
+    figure.add_trace(
+        go.Scatter(
+            mode="markers+lines",
+            x=x,
+            y=values.real,
+            name="I",
+        )
+    )
+    figure.add_trace(
+        go.Scatter(
+            mode="markers+lines",
+            x=x,
+            y=values.imag,
+            name="Q",
+        )
+    )
+    if return_figure:
+        return figure
+    _show_figure(figure, filename=f"{filename}_{target}", width=width, height=height)
+    return None
+
+
 class _FallbackResult(dict):
     """Minimal Result fallback used before qubex result models are importable."""
 
@@ -41,6 +235,8 @@ class _FallbackResult(dict):
         self.figures = figures or {}
 
     def plot(self, *args: Any, **kwargs: Any) -> None:
+        if self.figure is not None:
+            _display_if_interactive(self.figure)
         return None
 
 
@@ -62,6 +258,35 @@ class _FallbackExperimentResult:
         return self.data[key]
 
     def plot(self, *args: Any, **kwargs: Any) -> None:
+        for target, value in self.data.items():
+            times = getattr(value, "time_range", None)
+            data = getattr(value, "data", None)
+            if times is not None and data is not None:
+                _plot_iq_series(
+                    target=target,
+                    x=times,
+                    data=data,
+                    title=f"Rabi oscillation : {target}",
+                    xlabel="Drive duration (ns)",
+                    ylabel="Signal (arb. units)",
+                    filename="rabi_data",
+                    **kwargs,
+                )
+                continue
+            sweep_range = getattr(value, "sweep_range", None)
+            if sweep_range is not None and data is not None:
+                _plot_iq_series(
+                    target=target,
+                    x=sweep_range,
+                    data=data,
+                    title=f"{getattr(value, 'title', 'Sweep result')} : {target}",
+                    xlabel=getattr(value, "xlabel", "Sweep value"),
+                    ylabel=getattr(value, "ylabel", "Measured signal"),
+                    filename="sweep_data",
+                    xaxis_type=getattr(value, "xaxis_type", "linear"),
+                    yaxis_type=getattr(value, "yaxis_type", "linear"),
+                    **kwargs,
+                )
         return None
 
     def fit(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -84,26 +309,83 @@ class _FakeTargetMeasurement:
 
 
 class _FakeMeasureResult:
-    def __init__(self, data: Mapping[str, Any]) -> None:
+    def __init__(self, data: Mapping[str, Any], *, mode: str | None = None) -> None:
         self.data = dict(data)
+        self.mode = mode or "avg"
 
     def __getitem__(self, key: str) -> Any:
         return self.data[key]
 
     def plot(self, *args: Any, **kwargs: Any) -> None:
+        try:
+            import numpy as np
+        except Exception:
+            return None
+
+        return_figure = bool(kwargs.get("return_figure", False))
+        if self.mode == "single":
+            data = {
+                target: np.asarray(getattr(value, "kerneled", []), dtype=complex)
+                for target, value in self.data.items()
+            }
+            return _plot_iq_scatter(data, return_figure=return_figure)
+
+        figures = []
+        for target, value in self.data.items():
+            points = np.asarray(getattr(value, "kerneled", []), dtype=complex).reshape(-1)
+            title = f"Readout IQ data : {target}"
+            figure = _plot_iq_scatter(
+                {target: points},
+                title=title,
+                return_figure=return_figure,
+            )
+            if return_figure:
+                figures.append(figure)
+        if return_figure:
+            return figures
         return None
 
 
 class _FakeSweepTargetData:
-    def __init__(self, target: str, sweep_range: Any, data: Any) -> None:
+    def __init__(
+        self,
+        target: str,
+        sweep_range: Any,
+        data: Any,
+        *,
+        title: str = "Sweep result",
+        xlabel: str = "Sweep value",
+        ylabel: str = "Measured signal",
+        xaxis_type: str = "linear",
+        yaxis_type: str = "linear",
+    ) -> None:
         self.target = target
         self.sweep_range = sweep_range
         self.data = data
+        self.title = title
+        self.xlabel = xlabel
+        self.ylabel = ylabel
+        self.xaxis_type = xaxis_type
+        self.yaxis_type = yaxis_type
 
     def __getitem__(self, index: int) -> Any:
         if index != 0:
             raise IndexError(index)
         return self.data
+
+    def plot(self, **kwargs: Any) -> Any:
+        return _plot_iq_series(
+            target=self.target,
+            x=self.sweep_range,
+            data=self.data,
+            title=f"{self.title} : {self.target}",
+            xlabel=self.xlabel,
+            ylabel=self.ylabel,
+            filename="sweep_data",
+            xaxis_type=self.xaxis_type,
+            yaxis_type=self.yaxis_type,
+            **kwargs,
+        )
 
 
 class _FakeSweepResult:
@@ -126,6 +408,8 @@ class _FakeSweepResult:
         return self.data[key]
 
     def plot(self, *args: Any, **kwargs: Any) -> None:
+        for target, value in self.data.items():
+            value.plot(**kwargs)
         return None
 
     def get_sweep_point(self, index: tuple[int, ...] | int) -> dict[str, Any]:
@@ -1727,9 +2011,12 @@ class FakeExperiment:
         *,
         sweep_range: Collection[Any] | None = None,
         parameter_name: str = "parameter",
+        plot: bool | None = None,
         **kwargs: Any,
     ) -> Any:
         del parameter_name
+        if plot is None:
+            plot = True
         if values is None:
             values = sweep_range
         if values is None:
@@ -1739,7 +2026,19 @@ class FakeExperiment:
             schedule = sequence(value) if callable(sequence) else sequence
             results.append(self.execute(schedule, **kwargs))
         targets = self._target_labels(kwargs.get("targets"))
-        return self._fake_sweep_result(targets, list(values), results=results)
+        result = self._fake_sweep_result(
+            targets,
+            list(values),
+            results=results,
+            title=kwargs.get("title", "Sweep result"),
+            xlabel=kwargs.get("xlabel", "Sweep value"),
+            ylabel=kwargs.get("ylabel", "Measured signal"),
+            xaxis_type=kwargs.get("xaxis_type", "linear"),
+            yaxis_type=kwargs.get("yaxis_type", "linear"),
+        )
+        if plot:
+            result.plot()
+        return result
 
     def _fake_measure_result(
         self,
@@ -1755,14 +2054,19 @@ class FakeExperiment:
         for index, target in enumerate(labels):
             center = complex(0.1 + index * 0.05, 0.2)
             if mode == "single":
-                kerneled = np.full(shots, center, dtype=complex)
+                rng = np.random.default_rng(1000 + index)
+                kerneled = (
+                    center
+                    + rng.normal(scale=0.025, size=shots)
+                    + 1j * rng.normal(scale=0.025, size=shots)
+                ).astype(complex)
             else:
                 kerneled = np.asarray([center], dtype=complex)
             captures = [
                 SimpleNamespace(data=np.asarray([center], dtype=complex), kerneled=kerneled)
             ]
             data[target] = _FakeTargetMeasurement(kerneled=kerneled, data=captures)
-        return _FakeMeasureResult(data)
+        return _FakeMeasureResult(data, mode=mode)
 
     def _fake_sweep_result(
         self,
@@ -1770,6 +2074,11 @@ class FakeExperiment:
         sweep_values: list[Any],
         *,
         results: list[Any] | None = None,
+        title: str = "Sweep result",
+        xlabel: str = "Sweep value",
+        ylabel: str = "Measured signal",
+        xaxis_type: str = "linear",
+        yaxis_type: str = "linear",
     ) -> _FakeSweepResult:
         import numpy as np
 
@@ -1777,8 +2086,18 @@ class FakeExperiment:
         values = np.asarray(sweep_values)
         data = {}
         for index, target in enumerate(labels):
-            response = 0.5 + 0.5 * np.sin(np.linspace(0.0, 2.0 * np.pi, len(values)) + index)
-            data[target] = _FakeSweepTargetData(target, values, response)
+            phase = np.linspace(0.0, 2.0 * np.pi, len(values)) + index * 0.35
+            response = 0.5 * np.cos(phase) + 0.35j * np.sin(phase)
+            data[target] = _FakeSweepTargetData(
+                target,
+                values,
+                response,
+                title=title,
+                xlabel=xlabel,
+                ylabel=ylabel,
+                xaxis_type=xaxis_type,
+                yaxis_type=yaxis_type,
+            )
         return _FakeSweepResult(data=data, sweep_values=values, results=results)
 
     def _fake_ndsweep_result(
@@ -2594,16 +2913,21 @@ class FakeExperiment:
         store_params: bool | None = None,
         **_: Any,
     ) -> Any:
-        del frequencies, detuning, is_damped, fit_threshold, n_shots, shot_interval, plot
+        del frequencies, detuning, is_damped, fit_threshold, n_shots, shot_interval
+        if plot is None:
+            plot = True
         labels = self._target_labels(targets) if amplitudes is None else list(amplitudes)
         amplitudes = amplitudes or {target: 1.0 for target in labels}
-        return self._rabi_result(
+        result = self._rabi_result(
             amplitudes=amplitudes,
             time_range=time_range,
             ramptime=ramptime,
             store_params=bool(store_params),
             transition="ge",
         )
+        if plot:
+            result.plot()
+        return result
 
     def ef_rabi_experiment(
         self,
@@ -2621,16 +2945,21 @@ class FakeExperiment:
         store_params: bool | None = None,
         **kwargs: Any,
     ) -> Any:
-        del frequencies, detuning, is_damped, n_shots, shot_interval, plot, kwargs
+        del frequencies, detuning, is_damped, n_shots, shot_interval, kwargs
+        if plot is None:
+            plot = True
         labels = self._target_labels(targets) if amplitudes is None else list(amplitudes)
         amplitudes = amplitudes or {target: 1.0 for target in labels}
-        return self._rabi_result(
+        result = self._rabi_result(
             amplitudes=amplitudes,
             time_range=time_range,
             ramptime=ramptime,
             store_params=bool(store_params),
             transition="ef",
         )
+        if plot:
+            result.plot()
+        return result
 
     def state_tomography(self, sequence: Any, **kwargs: Any) -> Any:
         return self.pulse_tomography(sequence, **kwargs)
