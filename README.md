@@ -20,6 +20,12 @@ Install the environment with uv:
 uv sync
 ```
 
+Install notebook dependencies when running the example notebooks:
+
+```bash
+uv sync --extra examples
+```
+
 To install this emulator directly from GitHub with pip:
 
 ```bash

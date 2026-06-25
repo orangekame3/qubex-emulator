@@ -2533,8 +2533,6 @@ name = "qubex-emulator"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "jupyter" },
-    { name = "kaleido" },
     { name = "numpy" },
     { name = "plotly" },
     { name = "pyyaml" },
@@ -2547,6 +2545,10 @@ dev = [
     { name = "black" },
     { name = "pytest" },
     { name = "ruff" },
+]
+examples = [
+    { name = "jupyter" },
+    { name = "kaleido" },
 ]
 qubex-git = [
     { name = "qubex" },
@@ -2571,8 +2573,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
-    { name = "jupyter", specifier = ">=1.0.0" },
-    { name = "kaleido", specifier = ">=0.2.1" },
+    { name = "jupyter", marker = "extra == 'examples'", specifier = ">=1.0.0" },
+    { name = "kaleido", marker = "extra == 'examples'", specifier = ">=0.2.1" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pandas", marker = "extra == 'simulation'" },
     { name = "plotly", specifier = ">=5.17.0" },
@@ -2590,7 +2592,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "scipy", specifier = ">=1.11.0" },
 ]
-provides-extras = ["simulation", "qubex-git", "dev"]
+provides-extras = ["simulation", "examples", "qubex-git", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
