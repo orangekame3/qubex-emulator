@@ -14,14 +14,6 @@ through qxsimulator instead.
 
 ## Setup
 
-This repository is currently configured to use a local checkout of upstream
-`qubex` as editable packages:
-
-```text
-~/src/github.com/orangekame3/qubex-emulator
-~/src/github.com/orangekame3/qubex
-```
-
 Install the environment with uv:
 
 ```bash
@@ -32,13 +24,6 @@ To install this emulator directly from GitHub with pip:
 
 ```bash
 python -m pip install "qubex-emulator @ git+https://github.com/orangekame3/qubex-emulator.git"
-```
-
-If the upstream QUBEX packages are not available from your package index, use the
-`qubex-git` extra to install them from the upstream repository:
-
-```bash
-python -m pip install "qubex-emulator[qubex-git] @ git+https://github.com/orangekame3/qubex-emulator.git"
 ```
 
 ## Quick Start

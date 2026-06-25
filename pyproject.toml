@@ -10,7 +10,13 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
 dependencies = [
-    "qubex",
+    "qxcore @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxcore",
+    "qxfitting @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxfitting",
+    "qxpulse @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxpulse",
+    "qxschema @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxschema",
+    "qxsimulator @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxsimulator",
+    "qxvisualizer @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxvisualizer",
+    "qubex @ git+https://github.com/amachino/qubex.git",
     "plotly>=5.17.0",
     "scipy>=1.11.0",
     "numpy>=1.24.0",
@@ -23,16 +29,6 @@ dependencies = [
 simulation = [
     "pandas",
     "qutip",
-    "qxsimulator @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxsimulator",
-]
-qubex-git = [
-    "qxcore @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxcore",
-    "qxfitting @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxfitting",
-    "qxpulse @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxpulse",
-    "qxschema @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxschema",
-    "qxsimulator @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxsimulator",
-    "qxvisualizer @ git+https://github.com/amachino/qubex.git#subdirectory=packages/qxvisualizer",
-    "qubex @ git+https://github.com/amachino/qubex.git",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -45,15 +41,6 @@ packages = ["src/qubex_emulator"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
-[tool.uv.sources]
-qubex = { path = "../qubex", editable = true }
-qxcore = { path = "../qubex/packages/qxcore", editable = true }
-qxfitting = { path = "../qubex/packages/qxfitting", editable = true }
-qxpulse = { path = "../qubex/packages/qxpulse", editable = true }
-qxschema = { path = "../qubex/packages/qxschema", editable = true }
-qxsimulator = { path = "../qubex/packages/qxsimulator", editable = true }
-qxvisualizer = { path = "../qubex/packages/qxvisualizer", editable = true }
 
 [dependency-groups]
 dev = [

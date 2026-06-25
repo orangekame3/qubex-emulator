@@ -2084,7 +2084,7 @@ wheels = [
 [[package]]
 name = "qubex"
 version = "1.5.0b4"
-source = { editable = "../qubex" }
+source = { git = "https://github.com/amachino/qubex.git#2a11469a56840bf15e609dc6831e2bc77eca24be" }
 dependencies = [
     { name = "anywidget" },
     { name = "cma" },
@@ -2115,62 +2115,6 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "anywidget", specifier = ">=0.9" },
-    { name = "cma", specifier = ">=4.0" },
-    { name = "cvxpy", specifier = ">=1.6" },
-    { name = "ipykernel", specifier = ">=6.0" },
-    { name = "ipywidgets", specifier = ">=7.7" },
-    { name = "jsonpickle", specifier = ">=3.0" },
-    { name = "kaleido", specifier = "==0.2.1" },
-    { name = "nbformat", specifier = ">=5.0" },
-    { name = "networkx", specifier = ">=2.7" },
-    { name = "numpy", specifier = ">=1.22" },
-    { name = "plotly", specifier = ">=5.23,<6" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyserial", specifier = ">=3.5" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "qctrl-visualizer", specifier = ">=8.0" },
-    { name = "quelware-client", marker = "extra == 'quel3'", editable = "../qubex/packages/quelware-client/quelware-client" },
-    { name = "qxcore", editable = "../qubex/packages/qxcore" },
-    { name = "qxdriver-quel1", marker = "extra == 'backend'", editable = "../qubex/packages/qxdriver-quel1" },
-    { name = "qxdriver-quel1", marker = "extra == 'quel1'", editable = "../qubex/packages/qxdriver-quel1" },
-    { name = "qxfitting", editable = "../qubex/packages/qxfitting" },
-    { name = "qxpulse", editable = "../qubex/packages/qxpulse" },
-    { name = "qxschema", editable = "../qubex/packages/qxschema" },
-    { name = "qxsimulator", editable = "../qubex/packages/qxsimulator" },
-    { name = "qxvisualizer", editable = "../qubex/packages/qxvisualizer" },
-    { name = "rich", specifier = ">=13.0" },
-    { name = "scikit-learn", specifier = ">=1.0" },
-    { name = "scipy", specifier = ">=1.0" },
-    { name = "tqdm", specifier = ">=4.0" },
-    { name = "typedunits", specifier = ">=0.0" },
-    { name = "typing-extensions", specifier = ">=4.5" },
-]
-provides-extras = ["backend", "quel1", "quel3"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyinstrument" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-]
-docs = [
-    { name = "mkdocs" },
-    { name = "mkdocs-autoapi", extras = ["python"] },
-    { name = "mkdocs-autorefs" },
-    { name = "mkdocs-github-admonitions-plugin" },
-    { name = "mkdocs-jupyter" },
-    { name = "mkdocs-material" },
-    { name = "mkdocs-static-i18n" },
-    { name = "mkdocstrings", extras = ["python"] },
-    { name = "pymdown-extensions" },
-]
-
 [[package]]
 name = "qubex-emulator"
 version = "0.1.0"
@@ -2182,6 +2126,12 @@ dependencies = [
     { name = "plotly" },
     { name = "pyyaml" },
     { name = "qubex" },
+    { name = "qxcore" },
+    { name = "qxfitting" },
+    { name = "qxpulse" },
+    { name = "qxschema" },
+    { name = "qxsimulator" },
+    { name = "qxvisualizer" },
     { name = "scipy" },
 ]
 
@@ -2191,19 +2141,9 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
 ]
-qubex-git = [
-    { name = "qubex" },
-    { name = "qxcore" },
-    { name = "qxfitting" },
-    { name = "qxpulse" },
-    { name = "qxschema" },
-    { name = "qxsimulator" },
-    { name = "qxvisualizer" },
-]
 simulation = [
     { name = "pandas" },
     { name = "qutip" },
-    { name = "qxsimulator" },
 ]
 
 [package.dev-dependencies]
@@ -2222,20 +2162,18 @@ requires-dist = [
     { name = "plotly", specifier = ">=5.17.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "qubex", editable = "../qubex" },
-    { name = "qubex", marker = "extra == 'qubex-git'", editable = "../qubex" },
+    { name = "qubex", git = "https://github.com/amachino/qubex.git" },
     { name = "qutip", marker = "extra == 'simulation'" },
-    { name = "qxcore", marker = "extra == 'qubex-git'", editable = "../qubex/packages/qxcore" },
-    { name = "qxfitting", marker = "extra == 'qubex-git'", editable = "../qubex/packages/qxfitting" },
-    { name = "qxpulse", marker = "extra == 'qubex-git'", editable = "../qubex/packages/qxpulse" },
-    { name = "qxschema", marker = "extra == 'qubex-git'", editable = "../qubex/packages/qxschema" },
-    { name = "qxsimulator", marker = "extra == 'qubex-git'", editable = "../qubex/packages/qxsimulator" },
-    { name = "qxsimulator", marker = "extra == 'simulation'", editable = "../qubex/packages/qxsimulator" },
-    { name = "qxvisualizer", marker = "extra == 'qubex-git'", editable = "../qubex/packages/qxvisualizer" },
+    { name = "qxcore", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxcore" },
+    { name = "qxfitting", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxfitting" },
+    { name = "qxpulse", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxpulse" },
+    { name = "qxschema", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxschema" },
+    { name = "qxsimulator", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxsimulator" },
+    { name = "qxvisualizer", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxvisualizer" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "scipy", specifier = ">=1.11.0" },
 ]
-provides-extras = ["simulation", "qubex-git", "dev"]
+provides-extras = ["simulation", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2267,7 +2205,7 @@ wheels = [
 [[package]]
 name = "qxcore"
 version = "1.5.0b4"
-source = { editable = "../qubex/packages/qxcore" }
+source = { git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxcore#2a11469a56840bf15e609dc6831e2bc77eca24be" }
 dependencies = [
     { name = "netcdf4", version = "1.7.3", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "netcdf4", version = "1.7.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
@@ -2279,26 +2217,15 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "netcdf4", specifier = ">=1.0" },
-    { name = "numpy", specifier = ">=1.22" },
-    { name = "protobuf", specifier = ">=6.0" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "sympy", specifier = ">=1.0" },
-    { name = "typedunits", specifier = ">=0.0" },
-    { name = "typing-extensions", specifier = ">=4.5" },
-]
-
 [[package]]
 name = "qxfitting"
 version = "1.5.0b4"
-source = { editable = "../qubex/packages/qxfitting" }
+source = { git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxfitting#2a11469a56840bf15e609dc6831e2bc77eca24be" }
 
 [[package]]
 name = "qxpulse"
 version = "1.5.0b4"
-source = { editable = "../qubex/packages/qxpulse" }
+source = { git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxpulse#2a11469a56840bf15e609dc6831e2bc77eca24be" }
 dependencies = [
     { name = "numpy" },
     { name = "plotly" },
@@ -2307,34 +2234,19 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=1.22" },
-    { name = "plotly", specifier = ">=5.23" },
-    { name = "qxvisualizer", editable = "../qubex/packages/qxvisualizer" },
-    { name = "scipy", specifier = ">=1.0" },
-    { name = "typing-extensions", specifier = ">=4.5" },
-]
-
 [[package]]
 name = "qxschema"
 version = "1.5.0b4"
-source = { editable = "../qubex/packages/qxschema" }
+source = { git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxschema#2a11469a56840bf15e609dc6831e2bc77eca24be" }
 dependencies = [
     { name = "numpy" },
     { name = "qxcore" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=1.22" },
-    { name = "qxcore", editable = "../qubex/packages/qxcore" },
-]
-
 [[package]]
 name = "qxsimulator"
 version = "1.5.0b4"
-source = { editable = "../qubex/packages/qxsimulator" }
+source = { git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxsimulator#2a11469a56840bf15e609dc6831e2bc77eca24be" }
 dependencies = [
     { name = "ipython" },
     { name = "jax" },
@@ -2349,34 +2261,13 @@ dependencies = [
     { name = "scipy" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "ipython", specifier = ">=7.0" },
-    { name = "jax", specifier = ">=0.4" },
-    { name = "networkx", specifier = ">=2.7" },
-    { name = "numpy", specifier = ">=1.22" },
-    { name = "optax", specifier = ">=0.2" },
-    { name = "plotly", specifier = ">=5.23" },
-    { name = "qctrl-visualizer", specifier = ">=8.0" },
-    { name = "qutip", specifier = ">=5.0" },
-    { name = "qxpulse", editable = "../qubex/packages/qxpulse" },
-    { name = "qxvisualizer", editable = "../qubex/packages/qxvisualizer" },
-    { name = "scipy", specifier = ">=1.0" },
-]
-
 [[package]]
 name = "qxvisualizer"
 version = "1.5.0b4"
-source = { editable = "../qubex/packages/qxvisualizer" }
+source = { git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxvisualizer#2a11469a56840bf15e609dc6831e2bc77eca24be" }
 dependencies = [
     { name = "numpy" },
     { name = "plotly" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=1.22" },
-    { name = "plotly", specifier = ">=5.23" },
 ]
 
 [[package]]
