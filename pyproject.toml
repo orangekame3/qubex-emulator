@@ -38,7 +38,13 @@ packages = ["src/qubex_emulator"]
 allow-direct-references = true
 
 [tool.uv.sources]
-qubex = { git = "https://github.com/amachino/qubex.git", branch="feat/mock-mode"}
+qubex = { path = "../qubex", editable = true }
+qxcore = { path = "../qubex/packages/qxcore", editable = true }
+qxfitting = { path = "../qubex/packages/qxfitting", editable = true }
+qxpulse = { path = "../qubex/packages/qxpulse", editable = true }
+qxschema = { path = "../qubex/packages/qxschema", editable = true }
+qxsimulator = { path = "../qubex/packages/qxsimulator", editable = true }
+qxvisualizer = { path = "../qubex/packages/qxvisualizer", editable = true }
 
 [dependency-groups]
 dev = [
