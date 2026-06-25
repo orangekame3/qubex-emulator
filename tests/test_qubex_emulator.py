@@ -22,6 +22,46 @@ def test_fake_experiment_builds_internal_model() -> None:
     assert model["couplings"][0]["control"] == 0
 
 
+def test_fake_experiment_accepts_qubit_selection_like_experiment() -> None:
+    exp = FakeExperiment(qubits=[0, "2"])
+
+    assert exp.qubit_labels == ("Q00", "Q02")
+    assert set(exp.qubits) == {"Q00", "Q02"}
+    assert set(exp.hpi_pulse) == {"Q00", "Q02"}
+    assert "Q01" not in exp.available_targets
+    assert [qubit["label"] for qubit in exp.model()["qubits"]] == ["Q00", "Q02"]
+
+
+def test_fake_experiment_accepts_mux_selection_like_experiment() -> None:
+    exp = FakeExperiment(muxes=[1])
+
+    assert exp.mux_labels == ["M01"]
+    assert exp.qubit_labels == ("Q02", "Q03")
+    assert set(exp.qubits) == {"Q02", "Q03"}
+    assert set(exp.pi_pulse) == {"Q02", "Q03"}
+    assert exp.model()["metadata"]["muxes"] == ["M01"]
+    assert {qubit["mux"] for qubit in exp.model()["qubits"]} == {"M01"}
+
+
+def test_fake_experiment_resolves_physical_qids_for_selected_qubits() -> None:
+    exp = FakeExperiment(qubits=[2, 3])
+
+    assert exp.get_qubit_label(2) == "Q02"
+    assert exp.get_qubit_label(3) == "Q03"
+    assert exp.get_qubit_label(0) == "Q02"
+
+
+def test_fake_experiment_exposes_qdash_parameter_facade() -> None:
+    exp = FakeExperiment(qubits=[2])
+
+    exp.params.readout_amplitude["Q02"] = 0.15
+    exp.params.control_amplitude["Q02"] = 0.02
+
+    assert exp.experiment_system.control_params.get_readout_amplitude("Q02") == 0.15
+    assert exp.experiment_system.control_params.get_control_amplitude("Q02") == 0.02
+    assert exp.experiment_system.quantum_system.get_qubit("Q02").frequency == exp.qubit_frequencies[0]
+
+
 def test_fake_experiment_session_and_metadata_api() -> None:
     exp = FakeExperiment()
 

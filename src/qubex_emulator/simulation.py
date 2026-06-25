@@ -607,6 +607,17 @@ class _NormalizedRabiData:
         return self._base.fit(*args, **kwargs)
 
 
+class _FakeControlParams:
+    def __init__(self, experiment: "FakeExperiment") -> None:
+        self._experiment = experiment
+
+    def get_readout_amplitude(self, target: str) -> float:
+        return float(self._experiment.params.readout_amplitude.get(target, 0.2))
+
+    def get_control_amplitude(self, target: str) -> float:
+        return float(self._experiment.params.control_amplitude.get(target, 0.0125))
+
+
 @dataclass
 class FakeExperiment:
     """Small simulation fixture with QUBEX-like calibration metadata."""
@@ -701,9 +712,11 @@ class FakeExperiment:
         metadata: Mapping[str, Any] | None = None,
         **extra_options: Any,
     ) -> None:
+        mux_labels = self._normalize_mux_labels(muxes)
         labels = tuple(
             qubit_labels
             or self._normalize_qubit_labels(qubits)
+            or self._qubit_labels_from_muxes(muxes)
             or ("Q00", "Q01", "Q02", "Q03")
         )
         if exclude_qubits is not None:
@@ -714,6 +727,8 @@ class FakeExperiment:
         self.name = name
         self.device_id = device_id or system_id or chip_id or name
         self.qubit_labels = labels
+        self._mux_labels = mux_labels or self._infer_mux_labels(labels)
+        self._qubit_muxes = self._assign_qubit_muxes(labels, self._mux_labels)
         self.qubit_frequencies = self._pad_float_tuple(
             qubit_frequencies,
             (7.157231, 8.032295, 7.812112, 6.944337),
@@ -749,7 +764,7 @@ class FakeExperiment:
             {
                 "chip_id": chip_id,
                 "system_id": system_id,
-                "muxes": list(muxes or ()),
+                "muxes": list(self._mux_labels),
                 "calib_note_path": str(calib_note_path)
                 if calib_note_path is not None
                 else None,
@@ -774,6 +789,11 @@ class FakeExperiment:
         self.classifiers = {}
         self.readout_assignment_errors = {}
         self.properties = {}
+        self._params = SimpleNamespace(
+            readout_amplitude={label: 0.2 for label in labels},
+            control_amplitude={label: 0.0125 for label in labels},
+        )
+        self._control_params = _FakeControlParams(self)
         self._rabi_params = {}
         self._connected = False
         self._clifford_generator = None
@@ -893,10 +913,11 @@ class FakeExperiment:
 
     @property
     def quantum_system(self) -> Any:
-        try:
-            return self._qx_system()
-        except ImportError:
-            return SimpleNamespace(label=self.name, qubits=list(self.qubit_labels))
+        return self
+
+    @property
+    def control_params(self) -> _FakeControlParams:
+        return self._control_params
 
     @property
     def control_system(self) -> "FakeExperiment":
@@ -911,8 +932,8 @@ class FakeExperiment:
         return self
 
     @property
-    def params(self) -> dict[str, Any]:
-        return {}
+    def params(self) -> Any:
+        return self._params
 
     @property
     def chip(self) -> Any:
@@ -928,7 +949,7 @@ class FakeExperiment:
 
     @property
     def mux_labels(self) -> list[str]:
-        return []
+        return list(self._mux_labels)
 
     @property
     def qubits(self) -> dict[str, Any]:
@@ -1072,7 +1093,9 @@ class FakeExperiment:
             "name": self.name,
             "device_id": self.device_id,
             "qubits": qubits,
-            "couplings": [self._coupling_topology()],
+            "couplings": [self._coupling_topology()]
+            if len(self.qubit_labels) >= 2
+            else [],
         }
         if self.calibrated_at is not None:
             topology["calibrated_at"] = self.calibrated_at
@@ -1112,7 +1135,21 @@ class FakeExperiment:
             self.metadata["calib_note_path"] = str(path)
 
     def get_qubit_label(self, index: int) -> str:
-        return self.qubit_labels[index]
+        physical_label = _qid_to_label(index, 10)
+        if physical_label in self.qubit_labels:
+            return physical_label
+        if 0 <= index < len(self.qubit_labels):
+            return self.qubit_labels[index]
+        return physical_label
+
+    def get_qubit(self, target: str) -> Any:
+        label = self._ge_label(target)
+        index = self.qubit_labels.index(label)
+        return SimpleNamespace(
+            label=label,
+            frequency=self.qubit_frequencies[index],
+            anharmonicity=self.qubit_anharmonicities[index],
+        )
 
     def get_resonator_label(self, index: int) -> str:
         return self.resolve_read_label(self.get_qubit_label(index))
@@ -4197,6 +4234,7 @@ class FakeExperiment:
             "frequency": self.qubit_frequencies[index],
             "anharmonicity": self.qubit_anharmonicities[index],
             "readout_frequency": self.readout_frequencies[index],
+            "mux": self._qubit_muxes.get(label),
             "qubit_lifetime": {"t1": t1, "t2": t2},
             "gate_duration": {
                 "rz": 0,
@@ -4238,12 +4276,14 @@ class FakeExperiment:
             coupling["gate_duration"] = gate_duration
         return coupling
 
-    def _target_labels(self, targets: Collection[str] | str | None) -> list[str]:
+    def _target_labels(self, targets: Collection[str | int] | str | int | None) -> list[str]:
         if targets is None:
             return list(self.qubit_labels)
+        if isinstance(targets, int):
+            return [_qid_to_label(targets, 10)]
         if isinstance(targets, str):
-            return [targets]
-        return list(targets)
+            return list(self._normalize_qubit_labels([targets]) or (targets,))
+        return list(self._normalize_qubit_labels(targets) or ())
 
     @staticmethod
     def _normalize_qubit_labels(
@@ -4254,11 +4294,68 @@ class FakeExperiment:
         labels = []
         for value in values:
             if isinstance(value, int):
-                labels.append(_qid_to_label(value, 100))
+                labels.append(_qid_to_label(value, 10))
             else:
                 text = str(value)
-                labels.append(_qid_to_label(int(text), 100) if text.isdigit() else text)
+                labels.append(_qid_to_label(int(text), 10) if text.isdigit() else text)
         return tuple(labels)
+
+    @staticmethod
+    def _normalize_mux_labels(
+        values: Collection[str | int] | None,
+    ) -> tuple[str, ...]:
+        if values is None:
+            return ()
+        labels = []
+        for value in values:
+            if isinstance(value, int):
+                labels.append(f"M{value:02}")
+                continue
+            text = str(value)
+            labels.append(f"M{int(text):02}" if text.isdigit() else text)
+        return tuple(labels)
+
+    @classmethod
+    def _qubit_labels_from_muxes(
+        cls,
+        muxes: Collection[str | int] | None,
+    ) -> tuple[str, ...] | None:
+        mux_labels = cls._normalize_mux_labels(muxes)
+        if not mux_labels:
+            return None
+        labels = []
+        for mux_label in mux_labels:
+            digits = "".join(character for character in mux_label if character.isdigit())
+            if not digits:
+                continue
+            mux_index = int(digits)
+            labels.extend(
+                [_qid_to_label(2 * mux_index, 10), _qid_to_label(2 * mux_index + 1, 10)]
+            )
+        return tuple(dict.fromkeys(labels)) or None
+
+    @classmethod
+    def _infer_mux_labels(cls, qubits: Collection[str]) -> tuple[str, ...]:
+        mux_indices = []
+        for qubit in qubits:
+            digits = "".join(character for character in str(qubit) if character.isdigit())
+            if digits:
+                mux_indices.append(int(digits) // 2)
+        return tuple(f"M{index:02}" for index in dict.fromkeys(mux_indices))
+
+    @classmethod
+    def _assign_qubit_muxes(
+        cls,
+        qubits: Collection[str],
+        muxes: Collection[str],
+    ) -> dict[str, str]:
+        inferred = cls._infer_mux_labels(qubits)
+        mux_labels = tuple(muxes) or inferred
+        return {
+            qubit: (mux_labels[index // 2] if index // 2 < len(mux_labels) else inferred[index // 2])
+            for index, qubit in enumerate(qubits)
+            if inferred
+        }
 
     @staticmethod
     def _pad_float_tuple(
