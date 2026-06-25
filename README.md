@@ -26,6 +26,13 @@ To install this emulator directly from GitHub with pip:
 python -m pip install "qubex-emulator @ git+https://github.com/orangekame3/qubex-emulator.git"
 ```
 
+If the upstream QUBEX packages are not available from your package index, install
+them from GitHub with the `qubex-git` extra:
+
+```bash
+python -m pip install "qubex-emulator[qubex-git] @ git+https://github.com/orangekame3/qubex-emulator.git"
+```
+
 ## Quick Start
 
 ```python

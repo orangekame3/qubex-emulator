@@ -2539,12 +2539,6 @@ dependencies = [
     { name = "plotly" },
     { name = "pyyaml" },
     { name = "qubex" },
-    { name = "qxcore" },
-    { name = "qxfitting" },
-    { name = "qxpulse" },
-    { name = "qxschema" },
-    { name = "qxsimulator" },
-    { name = "qxvisualizer" },
     { name = "scipy" },
 ]
 
@@ -2553,6 +2547,15 @@ dev = [
     { name = "black" },
     { name = "pytest" },
     { name = "ruff" },
+]
+qubex-git = [
+    { name = "qubex" },
+    { name = "qxcore" },
+    { name = "qxfitting" },
+    { name = "qxpulse" },
+    { name = "qxschema" },
+    { name = "qxsimulator" },
+    { name = "qxvisualizer" },
 ]
 simulation = [
     { name = "pandas" },
@@ -2575,18 +2578,19 @@ requires-dist = [
     { name = "plotly", specifier = ">=5.17.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "qubex", git = "https://github.com/amachino/qubex.git?rev=develop" },
+    { name = "qubex" },
+    { name = "qubex", marker = "extra == 'qubex-git'", git = "https://github.com/amachino/qubex.git?rev=develop" },
     { name = "qutip", marker = "extra == 'simulation'" },
-    { name = "qxcore", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxcore&rev=develop" },
-    { name = "qxfitting", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxfitting&rev=develop" },
-    { name = "qxpulse", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxpulse&rev=develop" },
-    { name = "qxschema", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxschema&rev=develop" },
-    { name = "qxsimulator", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxsimulator&rev=develop" },
-    { name = "qxvisualizer", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxvisualizer&rev=develop" },
+    { name = "qxcore", marker = "extra == 'qubex-git'", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxcore&rev=develop" },
+    { name = "qxfitting", marker = "extra == 'qubex-git'", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxfitting&rev=develop" },
+    { name = "qxpulse", marker = "extra == 'qubex-git'", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxpulse&rev=develop" },
+    { name = "qxschema", marker = "extra == 'qubex-git'", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxschema&rev=develop" },
+    { name = "qxsimulator", marker = "extra == 'qubex-git'", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxsimulator&rev=develop" },
+    { name = "qxvisualizer", marker = "extra == 'qubex-git'", git = "https://github.com/amachino/qubex.git?subdirectory=packages%2Fqxvisualizer&rev=develop" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "scipy", specifier = ">=1.11.0" },
 ]
-provides-extras = ["simulation", "dev"]
+provides-extras = ["simulation", "qubex-git", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

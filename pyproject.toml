@@ -10,13 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
-    "qxcore @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxcore",
-    "qxfitting @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxfitting",
-    "qxpulse @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxpulse",
-    "qxschema @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxschema",
-    "qxsimulator @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxsimulator",
-    "qxvisualizer @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxvisualizer",
-    "qubex @ git+https://github.com/amachino/qubex.git@develop",
+    "qubex",
     "plotly>=5.17.0",
     "scipy>=1.11.0",
     "numpy>=1.24.0",
@@ -29,6 +23,15 @@ dependencies = [
 simulation = [
     "pandas",
     "qutip",
+]
+qubex-git = [
+    "qxcore @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxcore",
+    "qxfitting @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxfitting",
+    "qxpulse @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxpulse",
+    "qxschema @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxschema",
+    "qxsimulator @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxsimulator",
+    "qxvisualizer @ git+https://github.com/amachino/qubex.git@develop#subdirectory=packages/qxvisualizer",
+    "qubex @ git+https://github.com/amachino/qubex.git@develop",
 ]
 dev = [
     "pytest>=7.0.0",
